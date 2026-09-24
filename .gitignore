@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+/serverlessrepo/.aws-sam
+/docker/amd64
+/docker/arm64
+/check_size_output/
+/sync_layer_tmp
+/examples
+/private

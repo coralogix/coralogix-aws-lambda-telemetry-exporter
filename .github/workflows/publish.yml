@@ -1,0 +1,304 @@
+name: Publish
+
+on: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to be published'
+        required: true
+        default: '0.0.1'
+      environment:
+        description: 'Actually publish or just test?'
+        type: environment
+        required: true
+        default: test
+
+env:
+  CARGO_TERM_COLOR: always
+  PROTOFETCH_GIT_PROTOCOL: https
+  PROTOFETCH_GIT_BACKEND: cli
+
+jobs:
+
+  package-x86_64:
+    runs-on: macos-15
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    environment: ${{ inputs.environment }}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Cache Cargo
+      uses: actions/cache@v5
+      with:
+        path: /home/runner/.cargo
+        key: cargo-cache-${{ runner.os }}-x86_64
+    - name: Install rust with x86_64 target
+      uses: dtolnay/rust-toolchain@1.95.0
+      with:
+        target: x86_64-unknown-linux-gnu
+    - name: Install x86_64 toolchain
+      run: |
+        brew tap messense/macos-cross-toolchains
+        brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu
+    - name: Install protoc
+      run: |
+        wget https://github.com/protocolbuffers/protobuf/releases/download/v22.3/protoc-22.3-osx-x86_64.zip
+        unzip protoc-22.3-osx-x86_64.zip -d protoc
+        ./protoc/bin/protoc
+        echo "$PWD/protoc/bin" >> $GITHUB_PATH
+    - name: Install protofetch
+      run: cargo install protofetch --version 0.1.21 --locked
+    - name: Install cargo lambda
+      run: brew install cargo-lambda/tap/cargo-lambda
+    - name: Build & package
+      run: ./scripts/package_mac_x86_64.sh
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.SIGNER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.SIGNER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.SIGNER_AWS_DEFAULT_REGION }}
+    - name: Upload package to S3
+      run: aws s3 cp target/package-x86_64.zip s3://${{ vars.SIGNER_BUCKET }}/to-be-signed/
+    - name: Get S3 version of the uploaded file
+      run: |
+        LATEST_VERSION=$(aws s3api list-object-versions --bucket ${{ vars.SIGNER_BUCKET }} --prefix to-be-signed/package-x86_64.zip --query 'Versions[?IsLatest].[VersionId]' --output text)
+        echo "LATEST_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
+    - name: Sign the package
+      uses: clowdhaus/aws-lambda-code-signing-action@v2.0.0
+      with:
+        aws-region: ${{ vars.SIGNER_AWS_DEFAULT_REGION }}
+        source-s3-bucket: ${{ vars.SIGNER_BUCKET }}
+        source-s3-key: to-be-signed/package-x86_64.zip
+        source-s3-version: ${{ env.LATEST_VERSION }}
+        destination-s3-bucket: ${{ vars.SIGNER_BUCKET }}
+        destination-s3-prefix: signed/
+        profile-name: ${{ vars.SIGNER_PROFILE_NAME }}
+        max-wait-time: 60
+        rename-signed-object: true
+    - name: Download the signed package from S3
+      run: aws s3 cp s3://${{ vars.SIGNER_BUCKET }}/signed/package-x86_64.zip target/package-x86_64.zip
+    - name: Upload package
+      uses: actions/upload-artifact@v7
+      with:
+        name: package-x86_64.zip
+        path: target/package-x86_64.zip
+        if-no-files-found: error
+        retention-days: 1
+
+  package-arm64:
+    runs-on: macos-15
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    environment: ${{ inputs.environment }}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Cache Cargo
+      uses: actions/cache@v5
+      with:
+        path: /home/runner/.cargo
+        key: cargo-cache-${{ runner.os }}-arm64
+    - name: Install rust with aarch64 target
+      uses: dtolnay/rust-toolchain@1.95.0
+      with:
+        target: aarch64-unknown-linux-gnu
+    - name: Install aarch64 toolchain
+      run: |
+        brew tap messense/macos-cross-toolchains
+        brew install messense/macos-cross-toolchains/aarch64-unknown-linux-gnu
+    - name: Install protoc
+      run: |
+        wget https://github.com/protocolbuffers/protobuf/releases/download/v22.3/protoc-22.3-osx-x86_64.zip
+        unzip protoc-22.3-osx-x86_64.zip -d protoc
+        ./protoc/bin/protoc
+        echo "$PWD/protoc/bin" >> $GITHUB_PATH
+    - name: Install protofetch
+      run: cargo install protofetch --version 0.1.21 --locked
+    - name: Install cargo lambda
+      run: brew install cargo-lambda/tap/cargo-lambda
+    - name: Build & package
+      run: ./scripts/package_mac_arm64.sh
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.SIGNER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.SIGNER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.SIGNER_AWS_DEFAULT_REGION }}
+    - name: Upload package to S3
+      run: aws s3 cp target/package-arm64.zip s3://${{ vars.SIGNER_BUCKET }}/to-be-signed/
+    - name: Get S3 version of the uploaded file
+      run: |
+        LATEST_VERSION=$(aws s3api list-object-versions --bucket ${{ vars.SIGNER_BUCKET }} --prefix to-be-signed/package-arm64.zip --query 'Versions[?IsLatest].[VersionId]' --output text)
+        echo "LATEST_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
+    - name: Sign the package
+      uses: clowdhaus/aws-lambda-code-signing-action@v2.0.0
+      with:
+        aws-region: ${{ vars.SIGNER_AWS_DEFAULT_REGION }}
+        source-s3-bucket: ${{ vars.SIGNER_BUCKET }}
+        source-s3-key: to-be-signed/package-arm64.zip
+        source-s3-version: ${{ env.LATEST_VERSION }}
+        destination-s3-bucket: ${{ vars.SIGNER_BUCKET }}
+        destination-s3-prefix: signed/
+        profile-name: ${{ vars.SIGNER_PROFILE_NAME }}
+        max-wait-time: 60
+        rename-signed-object: true
+    - name: Download the signed package from S3
+      run: aws s3 cp s3://${{ vars.SIGNER_BUCKET }}/signed/package-arm64.zip target/package-arm64.zip
+    - name: Upload package
+      uses: actions/upload-artifact@v7
+      with:
+        name: package-arm64.zip
+        path: target/package-arm64.zip
+        if-no-files-found: error
+        retention-days: 1
+
+  publish-to-serverlessrepo:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    needs: [package-arm64, package-x86_64]
+    environment: ${{ inputs.environment }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+    - uses: aws-actions/setup-sam@v3
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.SAR_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.SAR_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.SAR_AWS_DEFAULT_REGION }}
+    - name: create target dir
+      run: mkdir -p target
+    - name: Download package-x86-64
+      uses: actions/download-artifact@v8
+      with:
+        name: package-x86_64.zip
+        path: target
+    - name: Download package-arm64
+      uses: actions/download-artifact@v8
+      with:
+        name: package-arm64.zip
+        path: target
+    - name: template author
+      run: sed -r 's/%AUTHOR%/${{ vars.SAR_AUTHOR }}/' template.yml.template > template.yml
+      working-directory: ./serverlessrepo
+    - name: sam build
+      run: sam build
+      working-directory: ./serverlessrepo
+    - name: sam package
+      run: sam package --s3-bucket ${{ vars.SAR_AWS_BUCKET }} --output-template-file .aws-sam/packaged.yaml
+      working-directory: ./serverlessrepo
+    - name: sam publish
+      run: sam publish --template .aws-sam/packaged.yaml --semantic-version ${{ github.event.inputs.version }}
+      working-directory: ./serverlessrepo
+
+  publish-layers:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    needs: [package-arm64, package-x86_64]
+    environment: ${{ inputs.environment }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.LAYER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.LAYER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.LAYER_AWS_DEFAULT_REGION }}
+    - name: create target dir
+      run: mkdir -p target
+    - name: Download package-x86-64
+      uses: actions/download-artifact@v8
+      with:
+        name: package-x86_64.zip
+        path: target
+    - name: Download package-arm64
+      uses: actions/download-artifact@v8
+      with:
+        name: package-arm64.zip
+        path: target
+    - name: Publish layers
+      run: ./scripts/publish_${{ inputs.environment }}.sh
+
+  publish-to-dockerhub:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    needs: [package-arm64, package-x86_64]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # required to request the GitHub OIDC JWT for the JFrog exchange
+    steps:
+    - uses: actions/checkout@v6
+    - name: Download package-x86-64
+      uses: actions/download-artifact@v8
+      with:
+        name: package-x86_64.zip
+        path: target
+    - name: Download package-arm64
+      uses: actions/download-artifact@v8
+      with:
+        name: package-arm64.zip
+        path: target
+    - name: prepare docker build
+      run: ./scripts/prepare_docker_build.sh package-x86_64.zip package-arm64.zip
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v4
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+    - name: Login to DockerHub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: coralogixrepo/${{ vars.DOCKERHUB_IMAGE_NAME }}
+        tags: |
+          type=raw,value=${{ github.event.inputs.version }}
+          type=sha
+    - name: Build and push
+      uses: docker/build-push-action@v7
+      with:
+        context: ./docker
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+    - name: Set up JFrog CLI
+      # Exchanges this job's GitHub OIDC JWT for a short-lived Artifactory token,
+      # which docker accepts as a registry password.
+      id: jfrog
+      uses: jfrog/setup-jfrog-cli@v4
+      env:
+        JF_URL: https://cgx.jfrog.io
+      with:
+        oidc-provider-name: github
+        oidc-audience: jfrog-github
+    - name: push image to jfrog
+      continue-on-error: true
+      env:
+        JFROG_USER: ${{ steps.jfrog.outputs.oidc-user }}
+        JFROG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+      run: |
+        echo "$JFROG_TOKEN" | docker login -u "$JFROG_USER" --password-stdin cgx.jfrog.io/coralogix-docker-images
+        docker pull coralogixrepo/${{ vars.DOCKERHUB_IMAGE_NAME }}:${{ steps.meta.outputs.tags }}
+        docker tag coralogixrepo/${{ vars.DOCKERHUB_IMAGE_NAME }}:${{ steps.meta.outputs.tags }} cgx.jfrog.io/coralogix-docker-images/${{ vars.DOCKERHUB_IMAGE_NAME }}:${{ steps.meta.outputs.tags }}
+        docker push cgx.jfrog.io/coralogix-docker-images/${{ vars.DOCKERHUB_IMAGE_NAME }}:${{ steps.meta.outputs.tags }}
+
+  add-tag:
+    runs-on: ubuntu-22.04
+    if: ${{ inputs.environment == 'production' && ( github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') ) }}
+    needs: [publish-to-serverlessrepo, publish-layers, publish-to-dockerhub] # This is here to make sure that a tag won't be added in a run that failed.
+    environment: ${{ inputs.environment }}
+    steps:
+    - name: Create version tag
+      uses: actions/github-script@v7
+      with:
+        script: |
+          github.rest.git.createRef({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: 'refs/tags/v${{ github.event.inputs.version }}',
+            sha: context.sha
+          })

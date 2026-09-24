@@ -1,0 +1,23 @@
+name = 'coralogix-aws-lambda-telemetry-exporter'
+proto_out_dir = './target/proto/'
+
+[opentelemetry]
+url = 'github.com/open-telemetry/opentelemetry-proto'
+revision = 'v1.0.0'
+allow_policies = [
+    "opentelemetry/proto/collector/logs/v1/*",
+    "opentelemetry/proto/logs/v1/*",
+    "opentelemetry/proto/collector/metrics/v1/*",
+    "opentelemetry/proto/metrics/v1/*",
+    "opentelemetry/proto/collector/trace/v1/*",
+    "opentelemetry/proto/trace/v1/*",
+    "opentelemetry/proto/resource/v1/*",
+    "opentelemetry/proto/common/v1/*",
+]
+
+[cx-api-telemetry]
+url = 'github.com/coralogix/cx-api-telemetry'
+revision = 'v1.0.0'
+allow_policies = [
+    "com/coralogix/ingress/otlp/v1/*",
+]

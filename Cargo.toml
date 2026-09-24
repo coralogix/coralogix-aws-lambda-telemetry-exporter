@@ -1,0 +1,85 @@
+[package]
+name = "coralogix-aws-lambda-telemetry-exporter"
+version = "1.2.0"
+edition = "2024"
+
+[[bin]]
+name = "coralogix-aws-lambda-telemetry-exporter"
+path = "src/main.rs"
+
+[lib]
+name = "coralogix_aws_lambda_telemetry_exporter"
+path = "src/lib.rs"
+
+[features]
+default = ["non-fips"]
+fips = [
+    "rustls/std",
+    "rustls/logging",
+    "rustls/fips",
+    "aws-smithy-http-client/rustls-aws-lc-fips",
+]
+non-fips = [
+    "rustls/std",
+    "rustls/logging",
+    "rustls/tls12",
+    "rustls/aws_lc_rs",
+    "aws-smithy-http-client/rustls-aws-lc",
+]
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+anyhow = "1.0.71"
+async-once-cell = "0.5.2"
+async-trait = "0.1.68"
+aws-config = { version = "1.8.16", default-features = false, features = ["rt-tokio"] }
+aws-sdk-firehose = { version = "1.106.0", default-features = false, features = ["rt-tokio"] }
+aws-sdk-lambda = { version = "1.122.0", default-features = false, features = ["rt-tokio"] }
+aws-sdk-secretsmanager = { version = "1.104.0", default-features = false, features = ["rt-tokio"] }
+aws-smithy-http-client = { version = "1.1.12", default-features = false }
+aws-smithy-runtime-api = "1.12.0"
+axum = "0.8.7"
+base64-simd = "0.8.0"
+derive_more = { version = "2.0.1", features = ["display", "from"] }
+fastrand = "2.0.0"
+flate2 = "1.0.26"
+futures = "0.3.28"
+hex = "0.4.3"
+hyper = "1.5.1"
+itertools = "0.14.0"
+lambda-extension = "1.0.1"
+lazy_static = "1.4.0"
+mime = "0.3.17"
+prost = "0.14.1"
+regex = "1.8.4"
+rustls = { version = "0.23.25", default-features = false }
+serde = "1.0.164"
+serde_json = "1.0.99"
+thiserror = "2.0.6"
+time = "0.3.22"
+tokio = { version = "1.29.0", features = ["full", "tracing", "time", "sync"] }
+tokio-stream = "0.1.17"
+tonic = { version = "0.14.2", features = ["gzip", "zstd", "tls-webpki-roots"] }
+tonic-prost = "0.14.2"
+tonic-types = "0.14.2"
+tower = "0.5.2"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[dev-dependencies]
+chrono = "0.4.26"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+pretty_assertions_sorted = "1.2.1"
+temp-env = "0.3.4"
+
+[build-dependencies]
+tonic-build = { version = "0.14.2", features = [] }
+tonic-prost-build = "0.14.2"
+prost-build = "0.14.1"
+built = "0.8.0"
+
+[[bench]]
+name = "counting_logs"
+harness = false

@@ -1,0 +1,88 @@
+// Copyright 2026 Coralogix Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Include compiled proto files
+
+#[allow(clippy::all)]
+pub mod opentelemetry {
+    pub mod proto {
+        /// Service stub and clients
+        pub mod collector {
+            pub mod logs {
+                pub mod v1 {
+                    tonic::include_proto!("opentelemetry.proto.collector.logs.v1");
+                }
+            }
+            pub mod metrics {
+                pub mod v1 {
+                    tonic::include_proto!("opentelemetry.proto.collector.metrics.v1");
+                }
+            }
+            pub mod trace {
+                pub mod v1 {
+                    tonic::include_proto!("opentelemetry.proto.collector.trace.v1");
+                }
+            }
+        }
+
+        /// Common types used across all signals
+        pub mod common {
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.common.v1");
+            }
+        }
+
+        /// Generated types used in logs.
+        pub mod logs {
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.logs.v1");
+            }
+        }
+
+        /// Generated types used in metrics.
+        pub mod metrics {
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.metrics.v1");
+            }
+        }
+
+        /// Generated types used in trace.
+        pub mod trace {
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.trace.v1");
+            }
+        }
+
+        /// Generated types used in resources.
+        pub mod resource {
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.resource.v1");
+            }
+        }
+    }
+}
+
+#[allow(clippy::all)]
+pub mod com {
+    /// Service stub and clients
+    pub mod coralogix {
+        pub mod ingress {
+            pub mod otlp {
+                pub mod v1 {
+                    tonic::include_proto!("com.coralogix.ingress.otlp.v1");
+                }
+            }
+        }
+    }
+}

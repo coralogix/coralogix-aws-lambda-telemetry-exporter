@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Lambda extension reporting function logs and platform telemetry to Coralogix
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: Coralogix-AWS-Lambda-Telemetry-Exporter
+    Description: Lambda extension reporting function logs and platform telemetry to Coralogix
+    Author: %AUTHOR%
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: ./../LICENSE
+    ReadmeUrl: README.md
+    Labels:
+      - lambda
+      - extension
+      - coralogix
+      - telemetry
+      - logs
+      - traces
+      - metrics
+    HomePageUrl: https://coralogix.com
+    SemanticVersion: 0.0.0 # We override this with an argument passed to the sam publish command
+    SourceCodeUrl: https://github.com/coralogix/coralogix-aws-lambda-telemetry-exporter
+Resources:
+  LambdaLayerX8664Version:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: coralogix-aws-lambda-telemetry-exporter-x86_64
+      Description: Lambda extension reporting function logs and platform telemetry to Coralogix (x86_64)
+      LicenseInfo: Apache-2.0
+      ContentUri: ./../target/package-x86_64.zip
+      CompatibleRuntimes:
+        - nodejs26.x
+        - nodejs24.x
+        - nodejs22.x
+        - python3.14
+        - python3.13
+        - python3.12
+        - python3.11
+        - python3.10
+        - java21
+        - java17
+        - java11
+        - java8.al2
+        - dotnet8
+        - provided.al2023
+        - provided.al2
+      CompatibleArchitectures:
+        - x86_64
+  LambdaLayerARM64Version:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: coralogix-aws-lambda-telemetry-exporter-arm64
+      Description: Lambda extension reporting function logs and platform telemetry to Coralogix (arm64)
+      LicenseInfo: Apache-2.0
+      ContentUri: ./../target/package-arm64.zip
+      CompatibleRuntimes:
+        - nodejs26.x
+        - nodejs24.x
+        - nodejs22.x
+        - python3.14
+        - python3.13
+        - python3.12
+        - python3.11
+        - python3.10
+        - java21
+        - java17
+        - java11
+        - java8.al2
+        - dotnet8
+        - provided.al2023
+        - provided.al2
+      CompatibleArchitectures:
+        - arm64
+Outputs:
+  LambdaLayerX8664VersionArn:
+    Description: LambdaLayer
+    Value:
+      Ref: LambdaLayerX8664Version
+    Export:
+      Name: LambdaLayer-X8664
+  LambdaLayerARM64VersionArn:
+    Description: LambdaLayer
+    Value:
+      Ref: LambdaLayerARM64Version
+    Export:
+      Name: LambdaLayer-ARM64
