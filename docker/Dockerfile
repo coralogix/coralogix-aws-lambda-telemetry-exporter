@@ -1,0 +1,4 @@
+FROM scratch AS base
+ARG TARGETARCH
+WORKDIR /opt
+COPY /$TARGETARCH .

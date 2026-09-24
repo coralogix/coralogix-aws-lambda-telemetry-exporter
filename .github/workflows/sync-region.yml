@@ -1,0 +1,34 @@
+name: Synchronise region
+
+on: 
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Actually publish or just test?'
+        type: environment
+        required: true
+        default: test
+      target_region:
+        description: 'AWS region which will get synced to eu-west-1'
+        required: true
+      is_limited_region:
+        description: 'Is target_region a region which has only x86_64 architecture (no arm64)?'
+        type: boolean
+        required: true
+
+jobs:
+
+  sync:
+    runs-on: ubuntu-22.04
+    environment: ${{ inputs.environment }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.LAYER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.LAYER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.LAYER_AWS_DEFAULT_REGION }}
+    - name: Sync region
+      run: |
+        source ./scripts/set_${{ inputs.environment }}_vars.sh
+        ./scripts/sync_region.sh "${{ vars.LAYER_AWS_ACCOUNT_ID }}" "${{ vars.LAYER_AWS_DEFAULT_REGION }}" "${{ vars.LAYER_AWS_ACCOUNT_ID }}" "${{ inputs.target_region }}" "$NAME_SUFFIX" "$PUBLIC" "${{ inputs.is_limited_region }}"
