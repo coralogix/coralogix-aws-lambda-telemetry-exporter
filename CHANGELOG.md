@@ -8,6 +8,18 @@ Exporter:
 * Update libraries used by coralogix-aws-lambda-telemetry-exporter
 * Drop support for Amazon Linux 1
 
+## [#] - 2026-09-28 - layer # - python layer 35 - nodejs layer # - java layer #
+
+Python:
+
+* Update OpenTelemetry Python API and SDK to `1.45.0` and instrumentation packages to `0.66.0`.
+
+## [#] - 2026-09-23 - layer # - python layer # - nodejs layer # - java layer 19
+
+Java:
+
+* Update OpenTelemetry Java agent and SDK libraries from `2.28.0` to `2.31.1`.
+
 ## [#] - 2026-09-07 - layer # - python layer # - nodejs layer 42 - java layer #
 
 NodeJS:
@@ -16,6 +28,12 @@ NodeJS:
   * `instrumentation-dns` `v0.65.0`, `instrumentation-express` `v0.70.0`, `instrumentation-graphql` `v0.70.0`, `instrumentation-grpc` `v0.222.0`, `instrumentation-hapi` `v0.68.0`, `instrumentation-http` `v0.222.0`, `instrumentation-ioredis` `v0.70.0`, `instrumentation-koa` `v0.70.0`, `instrumentation-mongodb` `v0.75.0`, `instrumentation-mysql` `v0.68.0`, `instrumentation-net` `v0.66.0`, `instrumentation-pg` `v0.74.0`, `instrumentation-redis` `v0.70.0`, `instrumentation-aws-sdk` `v0.77.0`
 * Drop support for NodeJS 20
 * Add support for NodeJS 26
+
+## [#] - 2026-08-06 - layer # - python layer 34 - nodejs layer # - java layer #
+
+Python:
+
+* Update OpenTelemetry Python API and SDK to `1.44.0` and instrumentation packages to `0.65.0`.
 
 ## [#] - 2026-07-03 - layer # - python layer # - nodejs layer 37 - java layer #
 
