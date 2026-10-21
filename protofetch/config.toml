@@ -1,0 +1,3 @@
+# Used via PROTOFETCH_CONFIG_DIR in build.rs. Env vars (e.g. in CI) override these.
+[git]
+backend = "cli"

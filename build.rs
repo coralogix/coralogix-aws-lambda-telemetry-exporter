@@ -12,30 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::process::Command;
+use std::path::PathBuf;
+
+use protofetch::{LockMode, Protofetch};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=protofetch.toml");
     println!("cargo:rerun-if-changed=protofetch.lock");
+    println!("cargo:rerun-if-changed=protofetch/config.toml");
 
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg("protofetch fetch")
-        .env(
-            "GIT_USERNAME",
-            std::env::var("GIT_USERNAME").unwrap_or_default(),
-        )
-        .env(
-            "GIT_PASSWORD",
-            std::env::var("GIT_PASSWORD").unwrap_or_default(),
-        )
-        .status()?;
+    if std::env::var_os("PROTOFETCH_CONFIG_DIR").is_none() {
+        let config_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("protofetch");
+        // SAFETY: build scripts run in a single-threaded process before protofetch runs.
+        unsafe { std::env::set_var("PROTOFETCH_CONFIG_DIR", config_dir) };
+    }
 
-    if !status.success() {
-        return Err(format!("Protofetch exit code {status}").into());
-    };
+    Protofetch::builder()
+        .try_build()?
+        .fetch(if is_ci::cached() {
+            LockMode::Locked
+        } else {
+            LockMode::Update
+        })?;
 
     let mut config = prost_build::Config::new();
     config.disable_comments(["."]);
