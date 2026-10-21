@@ -1,11 +1,11 @@
 # Change Log
 
-## [1.3.0] - future-release - layer # - python layer # - nodejs layer # - java layer #
+## [1.3.0] - 2026-10-21 - layer 39 - python layer 36 - nodejs layer 43 - java layer 20
 
 Exporter:
 
-* Add separate FIPS and non-FIPS builds. Use `aws-lc` crypto provider (previously used `ring`)
-* Update libraries used by coralogix-aws-lambda-telemetry-exporter
+* Use `aws-lc` crypto provider (previously used `ring`)
+* Update libraries used by coralogix-aws-lambda-telemetry-exporter (includes addressing the eMudhra Intermediate CA Compromise)
 * Drop support for Amazon Linux 1
 
 ## [#] - 2026-09-28 - layer # - python layer 35 - nodejs layer # - java layer #

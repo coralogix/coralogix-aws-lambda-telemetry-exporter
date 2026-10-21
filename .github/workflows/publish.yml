@@ -45,8 +45,6 @@ jobs:
         unzip protoc-22.3-osx-x86_64.zip -d protoc
         ./protoc/bin/protoc
         echo "$PWD/protoc/bin" >> $GITHUB_PATH
-    - name: Install protofetch
-      run: cargo install protofetch --version 0.1.21 --locked
     - name: Install cargo lambda
       run: brew install cargo-lambda/tap/cargo-lambda
     - name: Build & package
@@ -109,8 +107,6 @@ jobs:
         unzip protoc-22.3-osx-x86_64.zip -d protoc
         ./protoc/bin/protoc
         echo "$PWD/protoc/bin" >> $GITHUB_PATH
-    - name: Install protofetch
-      run: cargo install protofetch --version 0.1.21 --locked
     - name: Install cargo lambda
       run: brew install cargo-lambda/tap/cargo-lambda
     - name: Build & package

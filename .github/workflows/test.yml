@@ -21,8 +21,6 @@ jobs:
         key: cargo-cache-
     - name: Install protoc
       run: sudo apt install -y protobuf-compiler
-    - name: Install protofetch
-      run: cargo install protofetch --version 0.1.21 --locked
     - name: Check Format
       run: cargo fmt --all --check
     - name: Clippy
