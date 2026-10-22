@@ -133,7 +133,6 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-      id-token: write # OIDC token for the JFrog exchange
     if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
     needs: [package, publish-layers] # needs to run after publish-layers as it checks layer versions (see how NEW_LAYER_VERSION is set)
     environment: ${{ inputs.environment }}
@@ -148,17 +147,6 @@ jobs:
     env:
       RUNTIME: ${{ matrix.runtime }}
     steps:
-    - name: Set up JFrog CLI
-      # Exchanges this job's GitHub OIDC JWT for a short-lived Artifactory token.
-      # Replaces the JFROG_USER / JFROG_PASSWORD secret pair. The action calls
-      # core.setSecret() on both outputs, so they stay masked in the log.
-      id: jfrog
-      uses: jfrog/setup-jfrog-cli@v4
-      env:
-        JF_URL: https://cgx.jfrog.io
-      with:
-        oidc-provider-name: github
-        oidc-audience: jfrog-github
     - uses: actions/checkout@v6
     - uses: aws-actions/configure-aws-credentials@v6
       with:
@@ -210,11 +198,3 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-
-    - name: push image to jfrog
-      run: |
-        echo "${{ steps.jfrog.outputs.oidc-token }}" | docker login -u "${{ steps.jfrog.outputs.oidc-user }}" --password-stdin cgx.jfrog.io/coralogix-docker-images
-        docker pull coralogixrepo/${{ env.IMAGE_NAME }}:${{ env.NEW_LAYER_VERSION }}
-        docker tag coralogixrepo/${{ env.IMAGE_NAME }}:${{ env.NEW_LAYER_VERSION }} cgx.jfrog.io/coralogix-docker-images/${{ env.IMAGE_NAME }}:${{ env.NEW_LAYER_VERSION }}
-        docker push cgx.jfrog.io/coralogix-docker-images/${{ env.IMAGE_NAME }}:${{ env.NEW_LAYER_VERSION }}
-  
