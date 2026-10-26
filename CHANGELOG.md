@@ -1,6 +1,6 @@
 # Change Log
 
-## [1.3.0] - 2026-10-26 - layer 41 - python layer 38 - nodejs layer 44 - java layer 21
+## [1.3.0] - 2026-10-26 - layer 41 - python layer 38 - nodejs layer 46 - java layer 21
 
 Exporter:
 
