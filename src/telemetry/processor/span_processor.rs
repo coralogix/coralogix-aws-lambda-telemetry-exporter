@@ -291,7 +291,7 @@ pub(super) fn make_spans_after_report(state: &InvocationProcessingState) -> Vec<
                 parent_span_id: Vec::new(),
                 name: format!(
                     "{} context",
-                    &state.invocation_context.invoked_arn.function_name
+                    state.invocation_context.invoked_arn.function_name
                 ),
                 kind: SpanKind::Server as i32,
                 start_time_unix_nano: start_time_nano,

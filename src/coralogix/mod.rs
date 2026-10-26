@@ -109,7 +109,7 @@ fn make_endpoint(params: &OtlpSenderParams, target: &OtlpTarget) -> anyhow::Resu
         .connect_timeout(params.connect_timeout)
         .user_agent(format!(
             "coralogix-aws-lambda-telemetry-exporter/{}",
-            &params.context.telemetry_exporter_version
+            params.context.telemetry_exporter_version
         ))?;
 
     let endpoint = if is_tls {
