@@ -39,8 +39,6 @@ jobs:
     env:
       RUNTIME: ${{ matrix.runtime }}
       ARCHITECTURE: ${{ matrix.architecture }}
-    outputs:
-      new-layer-version: ${{ steps.version-check.outputs.NEW_LAYER_VERSION }}
     steps:
     - uses: actions/checkout@v6
     - uses: aws-actions/configure-aws-credentials@v6
@@ -91,10 +89,34 @@ jobs:
         if-no-files-found: error
         retention-days: 1
 
+  check-regional-sync:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: true
+      matrix:
+        runtime: ["python", "nodejs", "java"]
+        exclude:
+          - runtime: ${{ !inputs.python && 'python' }}
+          - runtime: ${{ !inputs.nodejs && 'nodejs' }}
+          - runtime: ${{ !inputs.java && 'java' }}
+    env:
+      RUNTIME: ${{ matrix.runtime }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.LAYER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.LAYER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.LAYER_AWS_DEFAULT_REGION }}
+    - name: Check if layer versions are in sync across regions
+      run: ENVIRONMENT=${{ inputs.environment }} ./scripts/check_combined_layer.sh
+
   publish-layers:
     runs-on: ubuntu-22.04
     if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
-    needs: [package]
+    needs: [package, check-regional-sync]
     environment: ${{ inputs.environment }}
     strategy:
       fail-fast: false
