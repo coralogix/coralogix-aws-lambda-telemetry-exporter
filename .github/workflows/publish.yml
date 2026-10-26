@@ -20,8 +20,23 @@ env:
 
 jobs:
 
+  check-regional-sync:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
+    environment: ${{ inputs.environment }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.LAYER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.LAYER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.LAYER_AWS_DEFAULT_REGION }}
+    - name: Check if layer versions are in sync across regions
+      run: ENVIRONMENT=${{ inputs.environment }} ./scripts/check_exporter_layer.sh
+
   package-x86_64:
     runs-on: macos-15
+    needs: [check-regional-sync]
     if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
     environment: ${{ inputs.environment }}
     steps:
@@ -84,6 +99,7 @@ jobs:
 
   package-arm64:
     runs-on: macos-15
+    needs: [check-regional-sync]
     if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'test' }}
     environment: ${{ inputs.environment }}
     steps:
