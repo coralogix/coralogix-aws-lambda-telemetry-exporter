@@ -1,0 +1,46 @@
+# cargo-deny policy for the GovCloud build (ci/govcloud/Cargo.lock, FIPS feature).
+#
+# Run with the GovCloud inputs in place:
+#   mkdir -p .cargo && cp ci/govcloud/config.toml .cargo/config.toml
+#   cp ci/govcloud/Cargo.lock Cargo.lock
+#   cargo deny --config ci/govcloud/deny.toml check advisories bans
+#
+# Holding the validated AWS-LC FIPS v3 module means holding rustls at 0.23.36, which
+# brings back the four rustls advisories below; mainline has cleared them. Each was
+# checked against this crate's FIPS build, not copied. Every exception here is scoped
+# to this build and goes away when GovCloud rejoins mainline.
+#
+# rustls-webpki is a path dependency (vendor/rustls-webpki), and cargo-deny does not
+# match path dependencies against the advisory database. Check any future
+# rustls-webpki advisory by version against vendor/rustls-webpki/PATCH.md.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+# The GovCloud build. Without these, cargo-deny checks the default (non-fips) build.
+no-default-features = true
+features = ["fips"]
+
+[advisories]
+ignore = [
+  # Enabled rustls features in this build: aws_lc_rs, fips, tls12, logging, std,
+  # prefer-post-quantum, rustls-native-certs. Not brotli.
+  { id = "RUSTSEC-2026-0285", reason = "Applies. TLS 1.3 conformance bug: handshake messages accepted at the wrong encryption level. The transcript stays authenticated, so a peer can only send in plaintext what should have been encrypted; no handshake tampering, key compromise or authentication bypass. Fixed in rustls >= 0.23.45, which requires aws-lc-rs ^1.18 (uncertified FIPS v4)." },
+  { id = "RUSTSEC-2026-0346", reason = "Not reachable. Requires Debug-formatting rustls client session values. This crate only installs the crypto provider (src/main.rs) and never formats rustls types; the TLS clients are the AWS SDK, hyper-rustls and tonic. Fixed in rustls >= 0.23.46, which requires aws-lc-rs ^1.18." },
+  { id = "RUSTSEC-2026-0348", reason = "Not reachable. The pre-authentication allocation is in brotli certificate decompression, behind the rustls brotli feature, which is off in this build (ci/govcloud/verify-build-inputs.sh checks it). Fixed in rustls >= 0.23.46, which requires aws-lc-rs ^1.18." },
+  { id = "RUSTSEC-2026-0349", reason = "Applies: this build enables rustls prefer-post-quantum. An unauthenticated ServerHello can make later connections to the same server use classical key exchange. Impact is limited to losing post-quantum protection against an active network attacker; classical TLS confidentiality and integrity are unaffected. Fixed in rustls >= 0.23.46, which requires aws-lc-rs ^1.18." },
+
+  # Not caused by the pin; the same in mainline.
+  { id = "RUSTSEC-2026-0543", reason = "Unmaintained, not a vulnerability. chrono comes through lambda-extension; no maintained replacement is available until it moves off chrono." },
+]
+
+[bans]
+multiple-versions = "allow"
+# aws-lc-rs 1.18 moves from the validated AWS-LC FIPS v3 module (certificates #5314 and
+# #5298) to v4, which is not certified. That is the reason this build exists.
+deny = [
+  { crate = "aws-lc-rs:>=1.18", reason = "GovCloud stays on the validated AWS-LC FIPS v3 module until v4 is validated and fits our build and runtime environments; see ci/govcloud/README.md." },
+  { crate = "aws-lc-fips-sys:>=0.14", reason = "aws-lc-fips-sys 0.14 builds the uncertified AWS-LC FIPS v4 module." },
+]

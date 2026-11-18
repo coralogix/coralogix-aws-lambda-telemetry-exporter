@@ -1,0 +1,4 @@
+# Upstream copies: keep them byte-for-byte.
+* -whitespace
+*.der binary
+README.md conflict-marker-size=80
