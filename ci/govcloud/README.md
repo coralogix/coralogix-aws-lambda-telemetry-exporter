@@ -66,3 +66,21 @@ cp Cargo.lock ci/govcloud/Cargo.lock && git checkout Cargo.lock && rm -r .cargo
 Remove the v3 workaround (this directory and `vendor/`) once v4 is validated, its
 documented requirements fit our build and runtime environments, and the replacement
 passes our release checks.
+
+## Publishing
+
+`.github/workflows/publish-govcloud.yml` (run from `master` with the version in
+`Cargo.toml`) builds, signs and publishes **private** layer versions; it never makes one
+public.
+
+If it fails part-way, use **Re-run failed jobs** on the same run. That keeps the build
+artifacts (kept 90 days) and reuses the signing recorded at
+`s3://<signing bucket>/signed/<version>/<commit>/<arch>.json`, so already published regions
+are reused and only missing ones are published. A new run for the same version and commit
+builds new bytes and fails at signing; it names the run to re-run instead.
+
+The `govcloud` environment role needs, in the signing bucket: `s3:PutObject` and
+`s3:GetObject` (and `s3:GetObjectVersion`) on `to-be-signed/*` and `signed/*`, and
+`s3:ListBucket` (to look up the signing record); `signer:StartSigningJob`,
+`DescribeSigningJob`, `GetSigningProfile`; and `lambda:ListLayerVersions`,
+`GetLayerVersion`, `PublishLayerVersion` in each region.
