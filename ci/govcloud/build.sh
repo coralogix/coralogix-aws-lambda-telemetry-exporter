@@ -66,7 +66,7 @@ fi
 
 module=$(grep -aoE "AWS-LC FIPS [0-9]+\.[0-9]+\.[0-9]+" "$bin" | sort -u)
 echo "FIPS module: ${module:-not found}"
-[[ "$module" == "$FIPS_MODULE"* ]] && [ "$(wc -l <<<"$module")" = 1 ] \
+[[ "$module" == "$FIPS_MODULE"* ]] && [ "$(wc -l <<<"$module")" -eq 1 ] \
   || { echo "::error::expected exactly one '${FIPS_MODULE}x' module string"; exit 1; }
 endgroup
 
