@@ -6,9 +6,9 @@ feature. That links the AWS-LC FIPS v4 module, validated by NIST as certificate 
 FedRAMP.
 
 `build.sh` builds natively on Amazon Linux 2023, so the layer supports the AL2023
-runtimes only. It runs `cargo deny` on the FIPS build, clippy and the tests, then
-packages the layer and checks its architecture, glibc (2.34 or lower) and that exactly
-one `AWS-LC FIPS 4.x` module is linked.
+runtimes only. It runs clippy and the tests, then packages the layer and checks its
+architecture, glibc (2.34 or lower) and that exactly one `AWS-LC FIPS 4.x` module is
+linked. CI also runs `cargo deny` on the FIPS build with `deny.toml`.
 
 ```bash
 docker build -t govcloud-builder -f ci/govcloud/Dockerfile.builder ci/govcloud

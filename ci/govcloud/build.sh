@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check, test, build and package the GovCloud FIPS layer for the native architecture.
+# Lint, test, build and package the GovCloud FIPS layer for the native architecture.
 # Same Cargo.lock as commercial; GovCloud only builds with the fips feature. Runs inside
 # ci/govcloud/Dockerfile.builder with the repo mounted at the working directory:
 #
@@ -9,7 +9,6 @@
 # Output: target/package-<arch>-fips.zip, laid out like the commercial layer.
 set -euo pipefail
 
-CARGO_DENY_VERSION=0.20.2
 MAX_GLIBC=2.34          # AL2023 Lambda runtimes
 FIPS_MODULE="AWS-LC FIPS 4."  # NIST certificate #5596; 4.x releases are its update stream
 FEATURES=(--locked --no-default-features --features fips)
@@ -34,15 +33,6 @@ if ! command -v rustup >/dev/null 2>&1; then
     | sh -s -- -y --default-toolchain none --no-modify-path
 fi
 rustup show
-if [ "$(cargo deny --version 2>/dev/null)" != "cargo-deny $CARGO_DENY_VERSION" ]; then
-  curl --proto '=https' --tlsv1.2 -sSfL \
-    "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-$(uname -m)-unknown-linux-musl.tar.gz" \
-    | tar -xz --strip-components=1 -C "$CARGO_HOME/bin" "cargo-deny-${CARGO_DENY_VERSION}-$(uname -m)-unknown-linux-musl/cargo-deny"
-fi
-endgroup
-
-group "cargo deny"
-cargo deny --config ci/govcloud/deny.toml check advisories bans
 endgroup
 
 group "clippy and tests"

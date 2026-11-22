@@ -35,6 +35,20 @@ jobs:
     # - name: Check license headers
     #   run: licensesnip check
 
+  # Advisories and bans for the GovCloud (fips) build; deny.toml selects the features.
+  govcloud-deny:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v6
+    - uses: EmbarkStudios/cargo-deny-action@v2
+      with:
+        # Replaces the action's default --all-features, which would check both builds.
+        arguments: --config ci/govcloud/deny.toml
+        command: check
+        command-arguments: advisories bans
+
   # The GovCloud layer: the same Cargo.lock with the fips feature, built natively on
   # AL2023 for each architecture (ci/govcloud/README.md).
   govcloud-build:
