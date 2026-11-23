@@ -3,7 +3,8 @@
 set -euo pipefail
 
 # The number of runtimes allowed here is limited. To add a new runtime, you must remove an existing one.
-COMPATIBLE_RUNTIMES="nodejs22.x nodejs24.x nodejs26.x java8.al2 java11 java17 java21 python3.10 python3.11 python3.12 python3.13 python3.14 dotnet8 provided.al2 provided.al2023"
+# set_govcloud*_vars.sh sets its own (AL2023 only).
+COMPATIBLE_RUNTIMES="${COMPATIBLE_RUNTIMES:-nodejs22.x nodejs24.x nodejs26.x java8.al2 java11 java17 java21 python3.10 python3.11 python3.12 python3.13 python3.14 dotnet8 provided.al2 provided.al2023}"
 
 for region in ${REGIONS[@]}; do
     output=`aws lambda publish-layer-version --layer-name coralogix-aws-lambda-telemetry-exporter-x86_64${NAME_SUFFIX} --compatible-architectures x86_64 --compatible-runtimes $COMPATIBLE_RUNTIMES --zip-file fileb://target/package-x86_64.zip --region $region`

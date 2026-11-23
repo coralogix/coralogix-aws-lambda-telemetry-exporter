@@ -1,0 +1,216 @@
+name: Publish GovCloud
+
+# The GovCloud counterpart of publish.yml, with the same signing and layer scripts, run
+# from master only. It differs where GovCloud requires it:
+#   - the FIPS layer is built natively on AL2023 (ci/govcloud/build.sh);
+#   - AWS access is OIDC to a role that trusts only the govcloud environment, no stored keys;
+#   - layers are published private and made public only after a smoke test passes, so a
+#     failed run never reaches customers (it leaves an unused private version).
+# There is no test environment: it would let any branch assume a GovCloud role.
+#
+# Separate from publish.yml because nothing else is shared: GovCloud gets only the exporter
+# layers (no SAR, Docker Hub or tag; the version is released in commercial first).
+# Recover from a partial publish with sync-region-govcloud.yml.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-govcloud
+  cancel-in-progress: false
+
+jobs:
+
+  check-regional-sync:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Check if layer versions are in sync across regions
+      run: ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh
+
+  package:
+    name: package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: [check-regional-sync]
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    env:
+      SIGNER_BUCKET: ${{ vars.SIGNER_BUCKET }}
+      # The bucket may be shared with other workflows, so each run signs under its own
+      # prefix: nothing else can replace its ZIP before signing or its signed ZIP before
+      # download.
+      SIGNING_PATH: govcloud/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: docker/setup-buildx-action@v4
+    - name: Build the AL2023 builder image
+      uses: docker/build-push-action@v7
+      with:
+        context: ci/govcloud
+        file: ci/govcloud/Dockerfile.builder
+        tags: govcloud-builder:latest
+        load: true
+        cache-from: type=gha,scope=govcloud-${{ matrix.arch }}
+    - name: Build & package
+      run: |
+        docker run --rm -v "$PWD":/work -w /work govcloud-builder:latest ci/govcloud/build.sh
+        sudo chown -R "$(id -u):$(id -g)" target
+        # The name publish_layers.sh expects.
+        mv target/package-${{ matrix.arch }}-fips.zip target/package-${{ matrix.arch }}.zip
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Upload package to S3
+      run: aws s3 cp "target/package-${{ matrix.arch }}.zip" "s3://$SIGNER_BUCKET/to-be-signed/$SIGNING_PATH/"
+    - name: Get S3 version of the uploaded file
+      run: |
+        LATEST_VERSION=$(aws s3api list-object-versions --bucket "$SIGNER_BUCKET" --prefix "to-be-signed/$SIGNING_PATH/package-${{ matrix.arch }}.zip" --query 'Versions[?IsLatest].[VersionId]' --output text)
+        echo "LATEST_VERSION=$LATEST_VERSION" >> "$GITHUB_ENV"
+    - name: Sign the package
+      uses: clowdhaus/aws-lambda-code-signing-action@v2.0.0
+      with:
+        aws-region: us-gov-west-1
+        source-s3-bucket: ${{ env.SIGNER_BUCKET }}
+        source-s3-key: to-be-signed/${{ env.SIGNING_PATH }}/package-${{ matrix.arch }}.zip
+        source-s3-version: ${{ env.LATEST_VERSION }}
+        destination-s3-bucket: ${{ env.SIGNER_BUCKET }}
+        destination-s3-prefix: signed/${{ env.SIGNING_PATH }}/
+        profile-name: ${{ vars.SIGNER_PROFILE_NAME }}
+        max-wait-time: 60
+        rename-signed-object: true
+    - name: Download the signed package from S3
+      run: aws s3 cp "s3://$SIGNER_BUCKET/signed/$SIGNING_PATH/package-${{ matrix.arch }}.zip" "target/package-${{ matrix.arch }}.zip"
+    - name: Upload package
+      uses: actions/upload-artifact@v7
+      with:
+        name: package-${{ matrix.arch }}.zip
+        path: target/package-${{ matrix.arch }}.zip
+        if-no-files-found: error
+        retention-days: 1
+
+  publish-layers:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    needs: [package]
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Download packages
+      uses: actions/download-artifact@v8
+      with:
+        pattern: package-*.zip
+        path: target
+        merge-multiple: true
+    - name: Publish layers
+      run: ./scripts/publish_govcloud.sh
+    # The new version, the same in every region and for both architectures.
+    - name: Check the published version
+      id: version
+      run: |
+        set -euo pipefail
+        version=$(ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh | tail -n1)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # Attaches each new (private) layer version to a temporary function in us-gov-west-1
+  # and checks the exporter runs in FIPS mode and delivers to the Coralogix test team.
+  smoke:
+    name: smoke (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    needs: [publish-layers]
+    environment: govcloud
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Smoke test
+      env:
+        SMOKE_DOMAIN: ${{ vars.SMOKE_DOMAIN }}
+        SMOKE_QUERY_KEY: ${{ secrets.SMOKE_QUERY_KEY }}
+        # The attempt too, so a re-run never collides with a previous attempt's leftovers.
+        SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        VERSION: ${{ needs.publish-layers.outputs.version }}
+        ARCH: ${{ matrix.arch }}
+      run: |
+        set -euo pipefail
+        arn=$(aws lambda get-layer-version --layer-name "coralogix-aws-lambda-telemetry-exporter-$ARCH" \
+          --version-number "$VERSION" --query LayerVersionArn --output text)
+        ci/govcloud/smoke.sh "$arn" "$ARCH"
+
+  # The release: only after both smoke tests pass.
+  make-public:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    needs: [publish-layers, smoke]
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    # Regions from set_govcloud_vars.sh. A re-run finds the permission already added, so
+    # only the policy check decides.
+    - name: Make the layer versions public
+      env:
+        VERSION: ${{ needs.publish-layers.outputs.version }}
+      run: |
+        set -euo pipefail
+        . ./scripts/set_govcloud_vars.sh
+        for region in "${REGULAR_REGIONS[@]}"; do
+          for arch in x86_64 arm64; do
+            layer="coralogix-aws-lambda-telemetry-exporter-$arch"
+            aws lambda add-layer-version-permission --region "$region" --layer-name "$layer" \
+              --version-number "$VERSION" --statement-id public --action lambda:GetLayerVersion --principal '*' >/dev/null || true
+            aws lambda get-layer-version-policy --region "$region" --layer-name "$layer" --version-number "$VERSION" \
+              --query Policy --output text | jq -e '.Statement[] | select(.Principal == "*")' >/dev/null \
+              || { echo "::error::$arch v$VERSION is not public in $region."; exit 1; }
+            echo "$region $arch v$VERSION: public"
+          done
+        done
