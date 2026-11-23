@@ -49,8 +49,8 @@ jobs:
         command: check
         command-arguments: advisories bans
 
-  # The GovCloud layer: the same Cargo.lock with the fips feature, built natively on
-  # AL2023 for each architecture (ci/govcloud/README.md).
+  # The GovCloud layer (fips feature), built natively on AL2023 for each architecture
+  # (ci/govcloud/README.md).
   govcloud-build:
     name: govcloud fips build (${{ matrix.arch }}, AL2023)
     runs-on: ${{ matrix.runner }}

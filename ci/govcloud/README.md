@@ -1,9 +1,8 @@
 # GovCloud build
 
-The GovCloud layers use the same `Cargo.lock` as commercial, built with the `fips`
-feature. That links the AWS-LC FIPS v4 module, validated by NIST as certificate #5596
-(AWS-LC FIPS 4.0.0); later 4.x releases are accepted as its update stream under
-FedRAMP.
+The GovCloud layers are built with the `fips` feature, which links the AWS-LC FIPS v4
+module, validated by NIST as certificate #5596 (AWS-LC FIPS 4.0.0); later 4.x releases
+are accepted as its update stream under FedRAMP.
 
 `build.sh` builds natively on Amazon Linux 2023, so the layer supports the AL2023
 runtimes only. It runs clippy and the tests, then packages the layer and checks its

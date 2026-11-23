@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Lint, test, build and package the GovCloud FIPS layer for the native architecture.
-# Same Cargo.lock as commercial; GovCloud only builds with the fips feature. Runs inside
-# ci/govcloud/Dockerfile.builder with the repo mounted at the working directory:
+# Lint, test, build and package the GovCloud FIPS layer (fips feature) for the native
+# architecture. Runs inside ci/govcloud/Dockerfile.builder with the repo mounted at the
+# working directory:
 #
 #   docker build -t govcloud-builder -f ci/govcloud/Dockerfile.builder ci/govcloud
 #   docker run --rm -v "$PWD":/work -w /work govcloud-builder ci/govcloud/build.sh
