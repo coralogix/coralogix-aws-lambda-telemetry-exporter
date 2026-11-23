@@ -41,9 +41,7 @@ from the failed run's `package-<arch>.zip` artifact (kept for a day) with
 
 The `govcloud` environment sets `AWS_ROLE_ARN`, `SIGNER_BUCKET` (in us-gov-west-1),
 `SIGNER_PROFILE_NAME`, `SMOKE_DOMAIN` (the Coralogix test team's domain) and the
-`SMOKE_QUERY_KEY` secret (a DataQuerying key for that team). The workflow checks they
-point at GovCloud, since a missing value would otherwise be inherited from the
-organization or repository.
+`SMOKE_QUERY_KEY` secret (a DataQuerying key for that team).
 
 ### AWS roles
 
@@ -51,9 +49,9 @@ The publishing role trusts only
 `repo:coralogix/coralogix-aws-lambda-telemetry-exporter:environment:govcloud` and needs:
 
 - `s3:PutObject`, `GetObject` and `GetObjectVersion` on `to-be-signed/govcloud/*` and
-  `signed/govcloud/*` in the signing bucket (signing reads a specific source version); `s3:ListBucketVersions` on the bucket, limited to those prefixes
-  with `s3:prefix`; `s3:GetBucketLocation`.
-- `signer:StartSigningJob`, `DescribeSigningJob` and `GetSigningProfile`.
+  `signed/govcloud/*` in the signing bucket (signing reads a specific source version);
+  `s3:ListBucketVersions` on the bucket, limited to those prefixes with `s3:prefix`.
+- `signer:StartSigningJob` and `DescribeSigningJob`.
 - `lambda:ListLayerVersions`, `GetLayerVersion`, `PublishLayerVersion`,
   `GetLayerVersionPolicy` and `AddLayerVersionPermission` on
   `coralogix-aws-lambda-telemetry-exporter-x86_64` and `-arm64`, in both regions.

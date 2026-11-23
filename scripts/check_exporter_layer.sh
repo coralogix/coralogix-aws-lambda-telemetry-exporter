@@ -32,3 +32,6 @@ if [ "$x86_version" != "$arm64_version" ]; then
     echo "x86 latest version ($x86_version) does not match arm64 latest version ($arm64_version)."
     exit 1
 fi
+
+# The version, the same in every region and for both architectures (last line, for callers).
+echo "$x86_version"

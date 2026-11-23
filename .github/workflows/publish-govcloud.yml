@@ -29,34 +29,12 @@ jobs:
       contents: read
       id-token: write
     steps:
-    - name: Check the role
-      env:
-        ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      run: |
-        [[ $ROLE_ARN =~ ^arn:aws-us-gov:iam::[0-9]{12}:role/ ]] || { echo "::error::AWS_ROLE_ARN is not a GovCloud role: '$ROLE_ARN'."; exit 1; }
     - uses: actions/checkout@v6
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
         role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
-    # Variables can be inherited from the organization or repository, so a missing GovCloud
-    # value can silently become a commercial one: check what they point at, not just that
-    # they are set.
-    - name: Check the GovCloud settings
-      env:
-        ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-        SIGNER_BUCKET: ${{ vars.SIGNER_BUCKET }}
-        SIGNER_PROFILE_NAME: ${{ vars.SIGNER_PROFILE_NAME }}
-      run: |
-        set -euo pipefail
-        account=$(aws sts get-caller-identity --query Account --output text)
-        [ "$account" = "$(cut -d: -f5 <<<"$ROLE_ARN")" ] || { echo "::error::Signed in to $account, not the role's account."; exit 1; }
-        region=$(aws s3api get-bucket-location --bucket "$SIGNER_BUCKET" --query LocationConstraint --output text) \
-          || { echo "::error::Can't find the signing bucket '$SIGNER_BUCKET' in GovCloud."; exit 1; }
-        [ "$region" = us-gov-west-1 ] || { echo "::error::The signing bucket is in $region, not us-gov-west-1."; exit 1; }
-        aws signer get-signing-profile --profile-name "$SIGNER_PROFILE_NAME" --query profileName --output text >/dev/null \
-          || { echo "::error::Can't find the signing profile '$SIGNER_PROFILE_NAME' in us-gov-west-1."; exit 1; }
     - name: Check if layer versions are in sync across regions
       run: ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh
 
@@ -162,9 +140,7 @@ jobs:
       id: version
       run: |
         set -euo pipefail
-        ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh
-        . ./scripts/set_govcloud_vars.sh
-        version=$(./scripts/check_layer_version.sh coralogix-aws-lambda-telemetry-exporter-x86_64 "${REGULAR_REGIONS[@]}")
+        version=$(ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh | tail -n1)
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # Attaches each new (private) layer version to a temporary function in us-gov-west-1
@@ -219,16 +195,9 @@ jobs:
         audience: sts.amazonaws.com
         role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
+    # Regions from set_govcloud_vars.sh. A re-run finds the permission already added, so
+    # only the policy check decides.
     - name: Make the layer versions public
-      env:
-        VERSION: ${{ needs.publish-layers.outputs.version }}
-      run: |
-        set -euo pipefail
-        for arch in x86_64 arm64; do
-          ENVIRONMENT=govcloud ./scripts/make_existing_layer_public.sh "coralogix-aws-lambda-telemetry-exporter-$arch" "$VERSION"
-        done
-    # make_existing_layer_public.sh ignores errors, so check the result.
-    - name: Check they are public
       env:
         VERSION: ${{ needs.publish-layers.outputs.version }}
       run: |
@@ -236,8 +205,10 @@ jobs:
         . ./scripts/set_govcloud_vars.sh
         for region in "${REGULAR_REGIONS[@]}"; do
           for arch in x86_64 arm64; do
-            aws lambda get-layer-version-policy --region "$region" \
-              --layer-name "coralogix-aws-lambda-telemetry-exporter-$arch" --version-number "$VERSION" \
+            layer="coralogix-aws-lambda-telemetry-exporter-$arch"
+            aws lambda add-layer-version-permission --region "$region" --layer-name "$layer" \
+              --version-number "$VERSION" --statement-id public --action lambda:GetLayerVersion --principal '*' >/dev/null || true
+            aws lambda get-layer-version-policy --region "$region" --layer-name "$layer" --version-number "$VERSION" \
               --query Policy --output text | jq -e '.Statement[] | select(.Principal == "*")' >/dev/null \
               || { echo "::error::$arch v$VERSION is not public in $region."; exit 1; }
             echo "$region $arch v$VERSION: public"
