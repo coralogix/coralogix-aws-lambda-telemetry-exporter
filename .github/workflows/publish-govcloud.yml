@@ -1,252 +1,175 @@
 name: Publish GovCloud
+run-name: Publish GovCloud ${{ inputs.version }} (${{ inputs.environment }})
 
-# Builds the GovCloud FIPS layers (ci/govcloud/README.md), signs them and publishes them
-# to the GovCloud distribution account as PRIVATE layer versions in each region, then
-# smoke-tests them in us-gov-west-1. Nothing here makes a version public.
+# The GovCloud counterpart of publish.yml: the same environment input, branches, signing
+# and layer scripts. It differs where GovCloud requires it:
+#   - the FIPS layer is built natively on AL2023 (ci/govcloud/build.sh);
+#   - AWS access is OIDC to a role that trusts only these environments, no stored keys;
+#   - layers are published private and made public only after a smoke test passes.
+# Environments: govcloud-test (-test layers, never public) and govcloud (the release).
 #
-# target: test (any branch, govcloud-test environment, -test layer names) rehearses the
-# whole flow; production (master only, govcloud environment) is the release. Like
-# publish.yml's test/production.
-#
-# Provenance chain, recorded in release-manifest.json:
-#   attested unsigned ZIP -> Signer input (S3 version) -> signing job + profile version
-#   -> signed ZIP hash -> each published layer version's CodeSha256.
+# Separate from publish.yml because nothing else is shared: GovCloud gets only the exporter
+# layers (no SAR, Docker Hub or tag; the version is released in commercial first).
+# Recover from a partial publish with sync-region-govcloud.yml.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to publish, as in Cargo.toml (e.g. 1.1.6)
+        description: 'Version to be published'
         required: true
-      target:
-        description: test publishes -test layers from any branch; production is the release
-        type: choice
-        options: [test, production]
-        default: test
+      environment:
+        description: 'govcloud-test or govcloud'
+        type: environment
+        required: true
+        default: govcloud-test
 
 concurrency:
-  group: publish-govcloud-${{ inputs.target }}-${{ inputs.version }}
+  group: publish-govcloud-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
-  # Advisories and bans for the FIPS build, before anything is built.
-  deny:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-    - uses: actions/checkout@v6
-    - uses: EmbarkStudios/cargo-deny-action@v2
-      with:
-        # Replaces the action's default --all-features, which would check both builds.
-        arguments: --config ci/govcloud/deny.toml
-        command: check
-        command-arguments: advisories bans
 
-  # No AWS credentials. Builds and attests the unsigned ZIP for each architecture.
-  build:
-    needs: deny
-    name: build (${{ matrix.arch }}, AL2023)
-    runs-on: ${{ matrix.runner }}
+  check-regional-sync:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'govcloud-test' }}
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
-      id-token: write      # attestation signing (Sigstore), not AWS
-      attestations: write
+      id-token: write
+    steps:
+    # The environment input lists every environment, commercial ones included.
+    - name: Check the environment
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        case "$ENVIRONMENT" in
+          govcloud|govcloud-test) ;;
+          *) echo "::error::Choose govcloud-test or govcloud, not $ENVIRONMENT."; exit 1 ;;
+        esac
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Check if layer versions are in sync across regions
+      run: ENVIRONMENT=${{ inputs.environment }} ./scripts/check_exporter_layer.sh
+
+  package:
+    name: package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: [check-regional-sync]
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'govcloud-test' }}
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
-      fail-fast: true
       matrix:
         include:
           - arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
+    env:
+      SIGNER_BUCKET: ${{ vars.GOVCLOUD_SIGNING_BUCKET_PREFIX }}-us-gov-west-1
+      # The bucket is shared by both environments (and possibly other workflows), so each
+      # run signs under its own prefix: nothing else can replace its ZIP before signing
+      # or its signed ZIP before download.
+      SIGNING_PATH: ${{ inputs.environment }}/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-    - name: Check the ref and version
-      env:
-        VERSION: ${{ inputs.version }}
-        TARGET: ${{ inputs.target }}
-      run: |
-        set -euo pipefail
-        [ "$TARGET" = test ] || [ "$GITHUB_REF" = refs/heads/master ] \
-          || { echo "::error::Production runs from master, not $GITHUB_REF."; exit 1; }
-        [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not a version like 1.1.6."; exit 1; }
     - uses: actions/checkout@v6
-    - name: Check the version matches Cargo.toml
-      env:
-        VERSION: ${{ inputs.version }}
-      run: |
-        set -euo pipefail
-        cargo_version=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{gsub(/[",]/,"");print $3;exit}' Cargo.toml)
-        [ "$cargo_version" = "$VERSION" ] || { echo "::error::Cargo.toml is $cargo_version, not $VERSION."; exit 1; }
-    - uses: docker/setup-buildx-action@v3
+    - uses: docker/setup-buildx-action@v4
     - name: Build the AL2023 builder image
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       with:
         context: ci/govcloud
         file: ci/govcloud/Dockerfile.builder
         tags: govcloud-builder:latest
         load: true
         cache-from: type=gha,scope=govcloud-${{ matrix.arch }}
-    # No cargo cache: a release builds from scratch.
-    - name: Test, build and package
-      run: docker run --rm -v "$PWD":/work -w /work govcloud-builder:latest ci/govcloud/build.sh
-    - name: Fix ownership
-      if: always()
-      run: sudo chown -R "$(id -u):$(id -g)" target || true
-    # One attestation per ZIP, so the subject name identifies the architecture.
-    - name: Attest build provenance
-      uses: actions/attest-build-provenance@v2
+    - name: Build & package
+      run: |
+        docker run --rm -v "$PWD":/work -w /work govcloud-builder:latest ci/govcloud/build.sh
+        sudo chown -R "$(id -u):$(id -g)" target
+        # The name publish_layers.sh expects.
+        mv target/package-${{ matrix.arch }}-fips.zip target/package-${{ matrix.arch }}.zip
+    - uses: aws-actions/configure-aws-credentials@v6
       with:
-        subject-path: target/package-${{ matrix.arch }}-fips.zip
-    - uses: actions/upload-artifact@v4
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Upload package to S3
+      run: aws s3 cp "target/package-${{ matrix.arch }}.zip" "s3://$SIGNER_BUCKET/to-be-signed/$SIGNING_PATH/"
+    - name: Get S3 version of the uploaded file
+      run: |
+        LATEST_VERSION=$(aws s3api list-object-versions --bucket "$SIGNER_BUCKET" --prefix "to-be-signed/$SIGNING_PATH/package-${{ matrix.arch }}.zip" --query 'Versions[?IsLatest].[VersionId]' --output text)
+        echo "LATEST_VERSION=$LATEST_VERSION" >> "$GITHUB_ENV"
+    - name: Sign the package
+      uses: clowdhaus/aws-lambda-code-signing-action@v2.0.0
       with:
-        name: package-${{ matrix.arch }}-fips.zip
-        path: target/package-${{ matrix.arch }}-fips.zip
+        aws-region: us-gov-west-1
+        source-s3-bucket: ${{ env.SIGNER_BUCKET }}
+        source-s3-key: to-be-signed/${{ env.SIGNING_PATH }}/package-${{ matrix.arch }}.zip
+        source-s3-version: ${{ env.LATEST_VERSION }}
+        destination-s3-bucket: ${{ env.SIGNER_BUCKET }}
+        destination-s3-prefix: signed/${{ env.SIGNING_PATH }}/
+        profile-name: ${{ vars.GOVCLOUD_SIGNER_PROFILE }}
+        max-wait-time: 60
+        rename-signed-object: true
+    - name: Download the signed package from S3
+      run: aws s3 cp "s3://$SIGNER_BUCKET/signed/$SIGNING_PATH/package-${{ matrix.arch }}.zip" "target/package-${{ matrix.arch }}.zip"
+    - name: Upload package
+      uses: actions/upload-artifact@v7
+      with:
+        name: package-${{ matrix.arch }}.zip
+        path: target/package-${{ matrix.arch }}.zip
         if-no-files-found: error
-        # A failed publish is retried with "Re-run failed jobs", which reuses these ZIPs.
-        retention-days: 90
+        retention-days: 1
 
-  publish-private:
-    needs: build
-    runs-on: ubuntu-latest
-    # The distribution account's role trusts only this environment, which allows master only.
-    environment: ${{ inputs.target == 'production' && 'govcloud' || 'govcloud-test' }}
+  publish-layers:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'govcloud-test' }}
+    needs: [package]
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       id-token: write
-      attestations: read
-    env:
-      VERSION: ${{ inputs.version }}
-      TARGET: ${{ inputs.target }}
-      NAME_SUFFIX: ${{ inputs.target == 'production' && '' || '-test' }}
-      SIGNING_REGION: us-gov-west-1
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-    # Before any credentials are requested.
-    - name: Check govcloud configuration
-      id: config
-      env:
-        ROLE_ARN: ${{ vars.GOVCLOUD_ROLE_ARN }}
-        REGIONS: ${{ vars.GOVCLOUD_REGIONS }}
-        PROFILE: ${{ vars.GOVCLOUD_SIGNER_PROFILE }}
-        BUCKET_PREFIX: ${{ vars.GOVCLOUD_SIGNING_BUCKET_PREFIX }}
-      run: |
-        set -euo pipefail
-        [[ $ROLE_ARN =~ ^arn:aws-us-gov:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$ ]] || { echo "::error::GOVCLOUD_ROLE_ARN '$ROLE_ARN' is not a GovCloud IAM role ARN."; exit 1; }
-        [[ $PROFILE =~ ^[A-Za-z0-9_]{2,64}$ ]] || { echo "::error::GOVCLOUD_SIGNER_PROFILE '$PROFILE' is not a signing profile name."; exit 1; }
-        [[ $BUCKET_PREFIX =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { echo "::error::GOVCLOUD_SIGNING_BUCKET_PREFIX '$BUCKET_PREFIX' is not a bucket name prefix."; exit 1; }
-        read -ra regions <<<"$(tr '\n' ' ' <<<"$REGIONS")"
-        [ "${#regions[@]}" -gt 0 ] || { echo "::error::GOVCLOUD_REGIONS is not set."; exit 1; }
-        for region in "${regions[@]}"; do
-          case "$region" in us-gov-west-1|us-gov-east-1) ;; *) echo "::error::GOVCLOUD_REGIONS has '$region'."; exit 1 ;; esac
-        done
-        {
-          echo "role_arn=$ROLE_ARN"
-          echo "regions=${regions[*]}"
-          echo "profile=$PROFILE"
-          echo "bucket=${BUCKET_PREFIX}-${SIGNING_REGION}"
-        } >> "$GITHUB_OUTPUT"
-
     - uses: actions/checkout@v6
-    - uses: actions/download-artifact@v4
-      with:
-        pattern: package-*-fips.zip
-        path: dist
-        merge-multiple: true
-
-    # These exact bytes were built by this workflow, on a GitHub-hosted runner, from this
-    # commit, and each is its own architecture's subject.
-    - name: Verify build provenance
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        shopt -s nullglob; files=(dist/*)
-        [ "${files[*]}" = "dist/package-arm64-fips.zip dist/package-x86_64-fips.zip" ] \
-          || { echo "::error::Unexpected files: ${files[*]}"; exit 1; }
-        for arch in x86_64 arm64; do
-          zip=dist/package-$arch-fips.zip
-          digest=$(sha256sum "$zip" | cut -d' ' -f1)
-          attestation=$(gh attestation verify "$zip" --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-govcloud.yml" \
-            --source-digest "$GITHUB_SHA" --deny-self-hosted-runners --format json) \
-            || { echo "::error::$zip has no valid provenance from this workflow at $GITHUB_SHA."; exit 1; }
-          jq -e --arg n "package-$arch-fips.zip" --arg d "$digest" \
-            'any(.[].verificationResult.statement.subject[]; .name == $n and .digest.sha256 == $d)' \
-            <<<"$attestation" >/dev/null \
-            || { echo "::error::$zip is not the attested package-$arch-fips.zip."; exit 1; }
-          echo "$zip: provenance verified ($digest)"
-        done
-
-    - uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ steps.config.outputs.role_arn }}
-        role-session-name: telemetry-exporter-${{ github.run_id }}
-        aws-region: ${{ env.SIGNING_REGION }}
-
-    - name: Sign
-      env:
-        BUCKET: ${{ steps.config.outputs.bucket }}
-        PROFILE: ${{ steps.config.outputs.profile }}
-        COMMIT: ${{ github.sha }}
-        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      # Reuses the signing of an earlier attempt of this release (see sign.sh).
-      run: |
-        set -euo pipefail
-        mkdir -p signed
-        for arch in x86_64 arm64; do
-          ci/govcloud/sign.sh "$arch" "dist/package-$arch-fips.zip" "signed/package-$arch-fips.zip" >> signing.jsonl
-        done
-        cat signing.jsonl
-
-    - name: Publish private layer versions
-      env:
-        REGIONS: ${{ steps.config.outputs.regions }}
-      run: |
-        set -euo pipefail
-        description="v$VERSION ${GITHUB_SHA::7}"
-        for region in $REGIONS; do
-          for arch in x86_64 arm64; do
-            ci/govcloud/publish-layer.sh "$arch" "$region" "signed/package-$arch-fips.zip" "$description" >> layers.jsonl
-          done
-        done
-        cat layers.jsonl
-
-    - name: Write the release manifest
-      if: always()
-      run: |
-        set -euo pipefail
-        jq -n --arg version "$VERSION" --arg target "$TARGET" --arg commit "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-          --slurpfile signing <(cat signing.jsonl 2>/dev/null) --slurpfile layers <(cat layers.jsonl 2>/dev/null) \
-          '{version: $version, commit: $commit, run: $run, target: $target, public: false, signing: $signing, layers: $layers}' \
-          > release-manifest.json
-        cat release-manifest.json
-        {
-          echo "## GovCloud layers v$VERSION, $TARGET (private)"
-          echo
-          echo "| Region | Arch | Layer version | Reused |"
-          echo "|---|---|---|---|"
-          jq -r '.layers[] | "| \(.region) | \(.arch) | `\(.arn)` | \(.reused) |"' release-manifest.json
-          echo
-          echo '```json'
-          cat release-manifest.json
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
-
-    - uses: actions/upload-artifact@v4
-      if: always()
+        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Download packages
+      uses: actions/download-artifact@v8
       with:
-        name: release-manifest
-        path: release-manifest.json
-        retention-days: 90
+        pattern: package-*.zip
+        path: target
+        merge-multiple: true
+    - name: Publish layers
+      run: ./scripts/publish_${{ inputs.environment }}.sh
+    # The new version, the same in every region and for both architectures.
+    - name: Check the published version
+      id: version
+      run: |
+        set -euo pipefail
+        ENVIRONMENT=${{ inputs.environment }} ./scripts/check_exporter_layer.sh
+        . ./scripts/set_${{ inputs.environment }}_vars.sh
+        version=$(./scripts/check_layer_version.sh "coralogix-aws-lambda-telemetry-exporter-x86_64${NAME_SUFFIX}" "${REGULAR_REGIONS[@]}")
+        echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  # Attaches each private layer version to a temporary function in us-gov-west-1 and
-  # checks the exporter runs in FIPS mode and delivers to the Coralogix test team. Not
-  # skippable: smoke.sh fails when the environment's smoke settings are missing.
+  # Attaches each new (private) layer version to a temporary function in us-gov-west-1
+  # and checks the exporter runs in FIPS mode and delivers to the Coralogix test team.
   smoke:
-    needs: publish-private
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.target == 'production' && 'govcloud' || 'govcloud-test' }}
+    name: smoke (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    needs: [publish-layers]
+    environment: ${{ inputs.environment }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -255,28 +178,13 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x86_64, arm64]
-    env:
-      REGION: us-gov-west-1
     steps:
     - uses: actions/checkout@v6
-    - uses: actions/download-artifact@v4
-      with:
-        name: release-manifest
-    - name: Find the layer version
-      id: layer
-      env:
-        ARCH: ${{ matrix.arch }}
-      run: |
-        set -euo pipefail
-        arn=$(jq -r --arg a "$ARCH" --arg r "$REGION" '.layers[] | select(.arch == $a and .region == $r) | .arn' release-manifest.json)
-        [ -n "$arn" ] || { echo "::error::No $ARCH layer version for $REGION in the release manifest."; exit 1; }
-        echo "arn=$arn" >> "$GITHUB_OUTPUT"
-    - uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
         role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
-        role-session-name: telemetry-exporter-smoke-${{ github.run_id }}
-        aws-region: ${{ env.REGION }}
+        aws-region: us-gov-west-1
     - name: Smoke test
       env:
         SMOKE_DOMAIN: ${{ vars.GOVCLOUD_SMOKE_DOMAIN }}
@@ -284,6 +192,52 @@ jobs:
         SMOKE_QUERY_KEY: ${{ secrets.GOV_SMOKE_QUERY_KEY }}
         # The attempt too, so a re-run never collides with a previous attempt's leftovers.
         SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-        LAYER_ARN: ${{ steps.layer.outputs.arn }}
+        VERSION: ${{ needs.publish-layers.outputs.version }}
         ARCH: ${{ matrix.arch }}
-      run: ci/govcloud/smoke.sh "$LAYER_ARN" "$REGION" "$ARCH"
+      run: |
+        set -euo pipefail
+        . ./scripts/set_${{ inputs.environment }}_vars.sh
+        arn=$(aws lambda get-layer-version --layer-name "coralogix-aws-lambda-telemetry-exporter-${ARCH}${NAME_SUFFIX}" \
+          --version-number "$VERSION" --query LayerVersionArn --output text)
+        ci/govcloud/smoke.sh "$arn" us-gov-west-1 "$ARCH"
+
+  # The release: only govcloud, only after both smoke tests pass.
+  make-public:
+    runs-on: ubuntu-22.04
+    if: ${{ inputs.environment == 'govcloud' && ( github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') ) }}
+    needs: [publish-layers, smoke]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Make the layer versions public
+      env:
+        VERSION: ${{ needs.publish-layers.outputs.version }}
+      run: |
+        set -euo pipefail
+        for arch in x86_64 arm64; do
+          ENVIRONMENT=govcloud ./scripts/make_existing_layer_public.sh "coralogix-aws-lambda-telemetry-exporter-$arch" "$VERSION"
+        done
+    # make_existing_layer_public.sh ignores errors, so check the result.
+    - name: Check they are public
+      env:
+        VERSION: ${{ needs.publish-layers.outputs.version }}
+      run: |
+        set -euo pipefail
+        . ./scripts/set_govcloud_vars.sh
+        for region in "${REGULAR_REGIONS[@]}"; do
+          for arch in x86_64 arm64; do
+            aws lambda get-layer-version-policy --region "$region" \
+              --layer-name "coralogix-aws-lambda-telemetry-exporter-$arch" --version-number "$VERSION" \
+              --query Policy --output text | jq -e '.Statement[] | select(.Principal == "*")' >/dev/null \
+              || { echo "::error::$arch v$VERSION is not public in $region."; exit 1; }
+            echo "$region $arch v$VERSION: public"
+          done
+        done

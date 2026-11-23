@@ -16,25 +16,31 @@ docker run --rm -v "$PWD":/work -w /work govcloud-builder ci/govcloud/build.sh
 
 ## Publishing
 
-`.github/workflows/publish-govcloud.yml` (run with the version in `Cargo.toml`) checks
-advisories, builds, signs and publishes **private** layer versions, then smoke-tests
-them; it never makes one public. Like `publish.yml`, it takes a `target`:
+`.github/workflows/publish-govcloud.yml` is the GovCloud counterpart of `publish.yml`, run
+with a version and an environment:
 
-- `test`: any branch, the `govcloud-test` environment, layers named `...-<arch>-test`
-  and signing records under `signed/test/`, so a rehearsal never blocks the release.
-- `production`: `master` only, the `govcloud` environment, the real layer names.
+- `govcloud-test`: any branch; publishes `-test` layers, which stay private.
+- `govcloud`: `master` or `release*` branches; the release.
 
-If it fails part-way, use **Re-run failed jobs** on the same run. That keeps the build
-artifacts (kept 90 days) and reuses the signing recorded at
-`s3://<signing bucket>/signed/<version>/<commit>/<arch>.json`, so already published regions
-are reused and only missing ones are published. A new run for the same version and commit
-builds new bytes and fails at signing; it names the run to re-run instead.
+Like commercial it checks the layer versions are in sync across regions, signs both
+packages with AWS Signer and publishes them with `scripts/publish_<environment>.sh`
+(regions, name suffix and the AL2023 runtimes are in `scripts/set_<environment>_vars.sh`).
+It differs only where GovCloud requires it: the FIPS build on AL2023, OIDC instead of
+stored keys, and publishing private, then smoke-testing, then making the version public
+(`govcloud` only).
 
-The `govcloud` environment role needs, in the signing bucket: `s3:PutObject` and
-`s3:GetObject` (and `s3:GetObjectVersion`) on `to-be-signed/*` and `signed/*`, and
-`s3:ListBucket` (to look up the signing record); `signer:StartSigningJob`,
-`DescribeSigningJob`, `GetSigningProfile`; and `lambda:ListLayerVersions`,
-`GetLayerVersion`, `PublishLayerVersion` in each region.
+If a publish fails part-way, the regions end up on different versions and the next run
+stops at the regional sync check. Run `sync-region-govcloud.yml` (the counterpart of
+`sync-region.yml`) for `us-gov-east-1` to copy the missing versions from
+`us-gov-west-1`, then publish again.
+
+The environments need `GOVCLOUD_ROLE_ARN`, `GOVCLOUD_SIGNER_PROFILE`,
+`GOVCLOUD_SIGNING_BUCKET_PREFIX` (the bucket is `<prefix>-us-gov-west-1`) and the smoke
+settings below. The role must trust both environments' OIDC subjects and needs, in the
+signing bucket, `s3:PutObject`, `s3:GetObject` and `s3:ListBucketVersions` on
+`to-be-signed/*` and `signed/*`; `signer:StartSigningJob` and `DescribeSigningJob`; and
+`lambda:ListLayerVersions`, `GetLayerVersion`, `PublishLayerVersion`,
+`AddLayerVersionPermission` and `GetLayerVersionPolicy` in each region.
 
 ## Smoke test
 

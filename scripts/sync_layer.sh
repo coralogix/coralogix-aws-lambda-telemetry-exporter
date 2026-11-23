@@ -13,13 +13,13 @@ target_layer_arn=$2
 public=$3
 is_target_limited_region=$4
 # shellcheck disable=SC2001
-source_region=$(sed 's/arn:aws:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\1/' <<< "$source_layer_arn")
+source_region=$(sed 's/arn:aws[a-z-]*:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\1/' <<< "$source_layer_arn")
 # shellcheck disable=SC2001
-source_layer_name=$(sed 's/arn:aws:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\2/' <<< "$source_layer_arn")
+source_layer_name=$(sed 's/arn:aws[a-z-]*:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\2/' <<< "$source_layer_arn")
 # shellcheck disable=SC2001
-target_region=$(sed 's/arn:aws:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\1/' <<< "$target_layer_arn")
+target_region=$(sed 's/arn:aws[a-z-]*:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\1/' <<< "$target_layer_arn")
 # shellcheck disable=SC2001
-target_layer_name=$(sed 's/arn:aws:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\2/' <<< "$target_layer_arn")
+target_layer_name=$(sed 's/arn:aws[a-z-]*:lambda:\([^:]*\):[^:]*:[^:]*:\([^:]*\)/\2/' <<< "$target_layer_arn")
 
 source_layer_versions=$(aws lambda list-layer-versions --layer-name "$source_layer_arn" --region "$source_region")
 target_layer_versions=$(aws lambda list-layer-versions --layer-name "$target_layer_arn" --region "$target_region")
