@@ -16,9 +16,13 @@ docker run --rm -v "$PWD":/work -w /work govcloud-builder ci/govcloud/build.sh
 
 ## Publishing
 
-`.github/workflows/publish-govcloud.yml` (run from `master` with the version in
-`Cargo.toml`) checks advisories, builds, signs and publishes **private** layer versions,
-then smoke-tests them; it never makes one public.
+`.github/workflows/publish-govcloud.yml` (run with the version in `Cargo.toml`) checks
+advisories, builds, signs and publishes **private** layer versions, then smoke-tests
+them; it never makes one public. Like `publish.yml`, it takes a `target`:
+
+- `test`: any branch, the `govcloud-test` environment, layers named `...-<arch>-test`
+  and signing records under `signed/test/`, so a rehearsal never blocks the release.
+- `production`: `master` only, the `govcloud` environment, the real layer names.
 
 If it fails part-way, use **Re-run failed jobs** on the same run. That keeps the build
 artifacts (kept 90 days) and reuses the signing recorded at
@@ -39,10 +43,10 @@ us-gov-west-1, invokes it with a unique marker and passes only when the exporter
 FIPS startup line, logs no errors and the marker reaches the Coralogix test team. Every
 `smoke-exporter-*` resource is removed afterwards.
 
-The job is skipped until the `GOVCLOUD_SMOKE_DOMAIN` repository variable is set. It also
-uses `GOVCLOUD_SMOKE_BOUNDARY_ARN` (optional), the `GOV_SMOKE_QUERY_KEY` secret (a
-DataQuerying key) and the Secrets Manager secret `coralogix-gov-smoke-test-api-key` (the
-test team's Send-Your-Data key). The role additionally needs `iam:CreateRole`,
+Each environment needs `GOVCLOUD_SMOKE_DOMAIN`, `GOVCLOUD_SMOKE_BOUNDARY_ARN` (optional)
+and the `GOV_SMOKE_QUERY_KEY` secret (a DataQuerying key); the account needs the Secrets
+Manager secret `coralogix-gov-smoke-test-api-key` (the test team's Send-Your-Data key).
+The role additionally needs `iam:CreateRole`,
 `PutRolePolicy`, `DeleteRolePolicy`, `DeleteRole` and `PassRole` on `role/smoke-exporter-*`;
 `lambda:CreateFunction`, `GetFunction`, `InvokeFunction`, `DeleteFunction` on
 `function:smoke-exporter-*`; `logs:FilterLogEvents` and `DeleteLogGroup` on their log

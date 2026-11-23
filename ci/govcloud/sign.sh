@@ -2,12 +2,13 @@
 # Sign one GovCloud layer ZIP with AWS Signer and download the signed ZIP, or reuse the
 # signing a previous attempt of this release already did.
 #
-#   BUCKET=... PROFILE=... VERSION=... COMMIT=... RUN_URL=... \
+#   BUCKET=... PROFILE=... VERSION=... COMMIT=... RUN_URL=... [TARGET=test] \
 #     ci/govcloud/sign.sh <arch> <zip> <signed-zip-out>
 #
 # Signer output differs on every job, and publish-layer.sh rejects a second set of bytes
 # under the same release. So each successful signing is recorded at
-# s3://$BUCKET/signed/$VERSION/$COMMIT/$arch.json, and a retry reuses it:
+# s3://$BUCKET/signed/$VERSION/$COMMIT/$arch.json (signed/test/... for TARGET=test, so a
+# rehearsal never blocks the real release of the same commit), and a retry reuses it:
 #   - same unsigned ZIP -> download the recorded signed ZIP (hash checked), no new job;
 #   - different unsigned ZIP (a fresh build) -> fail; re-run the failed jobs of the
 #     recorded run instead, which keeps its build artifacts.
@@ -21,8 +22,10 @@ arch=$1 zip=$2 out=$3
 : "${BUCKET:?}" "${PROFILE:?}" "${VERSION:?}" "${COMMIT:?}" "${RUN_URL:?}"
 
 unsigned=$(sha256sum "$zip" | cut -d' ' -f1)
-key=to-be-signed/$VERSION/$COMMIT/package-$arch-fips.zip
-record_key=signed/$VERSION/$COMMIT/$arch.json
+release=$VERSION/$COMMIT
+[ "${TARGET:-production}" = production ] || release=$TARGET/$release
+key=to-be-signed/$release/package-$arch-fips.zip
+record_key=signed/$release/$arch.json
 
 # Needs s3:ListBucket; without it a missing record can't be told from a denied one.
 found=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$record_key" \
@@ -50,7 +53,7 @@ source_version=$(aws s3api put-object --bucket "$BUCKET" --key "$key" --body "$z
 
 job_id=$(aws signer start-signing-job --profile-name "$PROFILE" \
   --source "s3={bucketName=$BUCKET,key=$key,version=$source_version}" \
-  --destination "s3={bucketName=$BUCKET,prefix=signed/$VERSION/$COMMIT/$arch-}" \
+  --destination "s3={bucketName=$BUCKET,prefix=signed/$release/$arch-}" \
   --query jobId --output text)
 echo "$arch: signing job $job_id" >&2
 aws signer wait successful-signing-job --job-id "$job_id" \

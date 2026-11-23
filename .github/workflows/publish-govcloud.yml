@@ -4,6 +4,10 @@ name: Publish GovCloud
 # to the GovCloud distribution account as PRIVATE layer versions in each region, then
 # smoke-tests them in us-gov-west-1. Nothing here makes a version public.
 #
+# target: test (any branch, govcloud-test environment, -test layer names) rehearses the
+# whole flow; production (master only, govcloud environment) is the release. Like
+# publish.yml's test/production.
+#
 # Provenance chain, recorded in release-manifest.json:
 #   attested unsigned ZIP -> Signer input (S3 version) -> signing job + profile version
 #   -> signed ZIP hash -> each published layer version's CodeSha256.
@@ -14,9 +18,14 @@ on:
       version:
         description: Version to publish, as in Cargo.toml (e.g. 1.1.6)
         required: true
+      target:
+        description: test publishes -test layers from any branch; production is the release
+        type: choice
+        options: [test, production]
+        default: test
 
 concurrency:
-  group: publish-govcloud-${{ inputs.version }}
+  group: publish-govcloud-${{ inputs.target }}-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
@@ -55,9 +64,11 @@ jobs:
     - name: Check the ref and version
       env:
         VERSION: ${{ inputs.version }}
+        TARGET: ${{ inputs.target }}
       run: |
         set -euo pipefail
-        [ "$GITHUB_REF" = refs/heads/master ] || { echo "::error::Run from master, not $GITHUB_REF."; exit 1; }
+        [ "$TARGET" = test ] || [ "$GITHUB_REF" = refs/heads/master ] \
+          || { echo "::error::Production runs from master, not $GITHUB_REF."; exit 1; }
         [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not a version like 1.1.6."; exit 1; }
     - uses: actions/checkout@v6
     - name: Check the version matches Cargo.toml
@@ -99,13 +110,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # The distribution account's role trusts only this environment, which allows master only.
-    environment: govcloud
+    environment: ${{ inputs.target == 'production' && 'govcloud' || 'govcloud-test' }}
     permissions:
       contents: read
       id-token: write
       attestations: read
     env:
       VERSION: ${{ inputs.version }}
+      TARGET: ${{ inputs.target }}
+      NAME_SUFFIX: ${{ inputs.target == 'production' && '' || '-test' }}
       SIGNING_REGION: us-gov-west-1
     steps:
     # Before any credentials are requested.
@@ -203,13 +216,13 @@ jobs:
       if: always()
       run: |
         set -euo pipefail
-        jq -n --arg version "$VERSION" --arg commit "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+        jq -n --arg version "$VERSION" --arg target "$TARGET" --arg commit "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
           --slurpfile signing <(cat signing.jsonl 2>/dev/null) --slurpfile layers <(cat layers.jsonl 2>/dev/null) \
-          '{version: $version, commit: $commit, run: $run, public: false, signing: $signing, layers: $layers}' \
+          '{version: $version, commit: $commit, run: $run, target: $target, public: false, signing: $signing, layers: $layers}' \
           > release-manifest.json
         cat release-manifest.json
         {
-          echo "## GovCloud layers v$VERSION (private)"
+          echo "## GovCloud layers v$VERSION, $TARGET (private)"
           echo
           echo "| Region | Arch | Layer version | Reused |"
           echo "|---|---|---|---|"
@@ -228,14 +241,12 @@ jobs:
         retention-days: 90
 
   # Attaches each private layer version to a temporary function in us-gov-west-1 and
-  # checks the exporter runs in FIPS mode and delivers to the Coralogix test team.
-  # Skipped until GOVCLOUD_SMOKE_DOMAIN is set (repository variable: job conditions
-  # can't read environment variables).
+  # checks the exporter runs in FIPS mode and delivers to the Coralogix test team. Not
+  # skippable: smoke.sh fails when the environment's smoke settings are missing.
   smoke:
     needs: publish-private
-    if: ${{ vars.GOVCLOUD_SMOKE_DOMAIN != '' }}
     runs-on: ubuntu-latest
-    environment: govcloud
+    environment: ${{ inputs.target == 'production' && 'govcloud' || 'govcloud-test' }}
     timeout-minutes: 30
     permissions:
       contents: read

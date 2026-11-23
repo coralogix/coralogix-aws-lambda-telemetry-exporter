@@ -2,7 +2,7 @@
 # Publish one signed GovCloud layer ZIP to one region, privately, or reuse the version a
 # previous run already published.
 #
-#   ci/govcloud/publish-layer.sh <arch> <region> <signed-zip> <description>
+#   [NAME_SUFFIX=-test] ci/govcloud/publish-layer.sh <arch> <region> <signed-zip> <description>
 #
 # A layer version is matched by its description ("v<version> <short-sha>"):
 #   - one with the same CodeSha256 as this ZIP is reused, so a re-run publishes only
@@ -23,7 +23,7 @@ case "$arch" in x86_64|arm64) ;; *) echo "arch must be x86_64 or arm64, got '$ar
 # in scripts/publish_layers.sh, which the Lambda API already accepts.
 COMPATIBLE_RUNTIMES=(nodejs22.x nodejs24.x python3.12 python3.13 python3.14 java21 provided.al2023)
 
-layer=coralogix-aws-lambda-telemetry-exporter-$arch
+layer=coralogix-aws-lambda-telemetry-exporter-$arch${NAME_SUFFIX:-}
 expected=$(openssl dgst -sha256 -binary "$zip" | base64)
 
 result() { # result <arn> <code_sha256> <reused>

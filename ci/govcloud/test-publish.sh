@@ -90,4 +90,10 @@ check "a different build is not signed again" '! sign "$t/other.zip" >/dev/null 
 echo tampered > "$t/signed.zip"
 check "a different signed ZIP is not published" '! pub us-gov-west-1 >/dev/null && [ "$(count "lambda publish-layer-version us-gov-west-1")" = 1 ]'
 
+# A test rehearsal of the same commit: its own signing records and -test layer names.
+r=$(export TARGET=test; sign "$t/other.zip")
+check "a test run signs separately from production" '[ "$(jq -r .reused <<<"$r")" = false ] && [ -f "$STATE/s3/signed/test/1.0.0/abc1234def/arm64.json" ]'
+r=$(export NAME_SUFFIX=-test; pub us-gov-west-1)
+check "a test run publishes the -test layer" '[[ $(jq -r .arn <<<"$r") == *:layer:coralogix-aws-lambda-telemetry-exporter-arm64-test:1 ]]'
+
 exit $fail
