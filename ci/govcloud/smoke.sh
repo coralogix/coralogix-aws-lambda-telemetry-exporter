@@ -4,27 +4,30 @@
 # only when the exporter starts in FIPS mode, logs no errors and the marker reaches the
 # Coralogix test team.
 #
-#   ci/govcloud/smoke.sh <layer-version-arn> <region> <arm64|x86_64>
+#   ci/govcloud/smoke.sh <layer-version-arn> <arm64|x86_64>
 #
+# The function runs in the layer's region as the existing role SMOKE_ROLE, so the caller
+# needs iam:PassRole on that role only, never permission to create roles (README.md).
 # Environment:
-#   SMOKE_DOMAIN        Coralogix domain of the test team, e.g. eu2.coralogix.com (required)
-#   SMOKE_QUERY_KEY     Coralogix API key with DataQuerying permissions for that team, or
-#   SMOKE_QUERY_CMD     a command run as `$SMOKE_QUERY_CMD "<dataprime query>"` that prints
-#                       the matching logs (for local runs, e.g. with the cx CLI)
-#   SMOKE_SECRET_NAME   Secrets Manager secret with the test team's Send-Your-Data key
-#                       (default coralogix-gov-smoke-test-api-key)
-#   SMOKE_BOUNDARY_ARN  permissions boundary for the role this creates (optional)
-#   SMOKE_RUN_ID        unique id for resource names (default GITHUB_RUN_ID or the time)
+#   SMOKE_DOMAIN       Coralogix domain of the test team, e.g. eu2.coralogix.com (required)
+#   SMOKE_QUERY_KEY    Coralogix API key with DataQuerying permissions for that team, or
+#   SMOKE_QUERY_CMD    a command run as `$SMOKE_QUERY_CMD "<dataprime query>"` that prints
+#                      the matching logs (for local runs, e.g. with the cx CLI)
+#   SMOKE_SECRET_NAME  Secrets Manager secret with the test team's Send-Your-Data key
+#                      (default coralogix-gov-smoke-test-api-key)
+#   SMOKE_ROLE         the function's role (default smoke-exporter)
+#   SMOKE_RUN_ID       unique id for resource names (default GITHUB_RUN_ID or the time)
 #
-# Every resource is named smoke-* and removed at the end, pass or fail. The exit code is
+# The function and its log group are removed at the end, pass or fail. The exit code is
 # the test's; cleanup problems are reported but never hide a test failure.
 set -uo pipefail
 
-usage="usage: smoke.sh <layer-version-arn> <region> <arm64|x86_64>"
-layer_arn=${1:?$usage} region=${2:?$usage} arch=${3:?$usage}
+usage="usage: smoke.sh <layer-version-arn> <arm64|x86_64>"
+layer_arn=${1:?$usage} arch=${2:?$usage}
 case "$arch" in arm64|x86_64) ;; *) echo "::error::arch must be arm64 or x86_64, not '$arch'."; exit 2 ;; esac
-[[ $layer_arn =~ ^arn:aws[a-z-]*:lambda:$region:[0-9]{12}:layer:[A-Za-z0-9_-]+:[0-9]+$ ]] \
-  || { echo "::error::'$layer_arn' is not a layer version ARN in $region."; exit 2; }
+[[ $layer_arn =~ ^arn:(aws[a-z-]*):lambda:([a-z0-9-]+):([0-9]{12}):layer:[A-Za-z0-9_-]+:[0-9]+$ ]] \
+  || { echo "::error::'$layer_arn' is not a layer version ARN."; exit 2; }
+partition=${BASH_REMATCH[1]} region=${BASH_REMATCH[2]} account=${BASH_REMATCH[3]}
 : "${SMOKE_DOMAIN:?SMOKE_DOMAIN is required}"
 if [ -z "${SMOKE_QUERY_KEY:-}" ] && [ -z "${SMOKE_QUERY_CMD:-}" ]; then
   echo "::error::Set SMOKE_QUERY_KEY or SMOKE_QUERY_CMD to read the marker back from Coralogix."
@@ -33,15 +36,17 @@ fi
 
 export AWS_REGION="$region" AWS_DEFAULT_REGION="$region"
 secret_name=${SMOKE_SECRET_NAME:-coralogix-gov-smoke-test-api-key}
+role_arn="arn:$partition:iam::$account:role/${SMOKE_ROLE:-smoke-exporter}"
 run_id=${SMOKE_RUN_ID:-${GITHUB_RUN_ID:-$(date +%s)}}
 name="smoke-exporter-${run_id}-${arch}"
 name=${name:0:64}
 subsystem="$name"
-marker="cxexpsmoke ${arch} ${run_id} $(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+# One token, so the query can search for it as a word.
+marker="cxexpsmoke-${arch}-${run_id}-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
-result=1 role_created=false fn_created=false
+result=1
 tmp=$(mktemp -d)
 # Before the function exists: Lambda may initialize it, and log the FIPS startup line,
 # before the first invocation.
@@ -53,7 +58,7 @@ delete() {
   local attempt out
   for attempt in 1 2 3; do
     if out=$("$@" 2>&1); then return 0; fi
-    grep -qE 'ResourceNotFoundException|NoSuchEntity' <<<"$out" && return 0
+    grep -q 'ResourceNotFoundException' <<<"$out" && return 0
     [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
   done
   echo "$out" | tail -n1
@@ -63,15 +68,11 @@ delete() {
 cleanup() {
   local leftovers=()
   log "cleanup"
-  if $fn_created; then
-    delete aws lambda delete-function --function-name "$name" || leftovers+=("function $name")
-  fi
+  # Always attempted: create-function can fail after AWS created the function (e.g. a lost
+  # response), and the name is unique to this run.
+  delete aws lambda delete-function --function-name "$name" || leftovers+=("function $name")
   # Deleted without checking first: listing log groups needs wider permissions.
   delete aws logs delete-log-group --log-group-name "/aws/lambda/$name" || leftovers+=("log group /aws/lambda/$name")
-  if $role_created; then
-    delete aws iam delete-role-policy --role-name "$name" --policy-name smoke || leftovers+=("policy smoke on role $name")
-    delete aws iam delete-role --role-name "$name" || leftovers+=("role $name")
-  fi
   rm -rf "$tmp"
   # Leftovers fail a passing run, so they get noticed; a test failure stays the reason.
   if [ "${#leftovers[@]}" -gt 0 ]; then
@@ -85,44 +86,18 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM
 fail() { echo "::error::$*"; result=1; exit 1; }
 
-caller=$(aws sts get-caller-identity --output json) || fail "No AWS credentials."
-account=$(jq -r .Account <<<"$caller")
-partition=$(jq -r .Arn <<<"$caller" | cut -d: -f2)
 secret_arn=$(aws secretsmanager describe-secret --secret-id "$secret_name" --query ARN --output text) \
   || fail "Can't find the smoke API key secret '$secret_name'."
-
-# Logs plus reading the key, nothing else.
-log "role $name"
-boundary=()
-[ -n "${SMOKE_BOUNDARY_ARN:-}" ] && boundary=(--permissions-boundary "$SMOKE_BOUNDARY_ARN")
-aws iam create-role --role-name "$name" ${boundary[@]+"${boundary[@]}"} --assume-role-policy-document \
-  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-  >/dev/null || fail "Can't create role $name."
-role_created=true
-aws iam put-role-policy --role-name "$name" --policy-name smoke --policy-document "$(jq -nc \
-  --arg logs "arn:$partition:logs:$region:$account:log-group:/aws/lambda/$name:*" --arg secret "$secret_arn" \
-  '{Version: "2012-10-17", Statement: [
-     {Effect: "Allow", Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], Resource: [$logs]},
-     {Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: $secret}]}')" \
-  || fail "Can't attach the role policy."
 
 printf 'def handler(event, context):\n    print(event["marker"])\n    return "ok"\n' > "$tmp/app.py"
 (cd "$tmp" && zip -q fn.zip app.py) || fail "Can't package the test function."
 
-# A new role takes a few seconds before Lambda can assume it.
 log "function $name with $layer_arn"
-for _ in $(seq 1 12); do
-  if aws lambda create-function --function-name "$name" --runtime python3.12 --architectures "$arch" \
-      --handler app.handler --zip-file "fileb://$tmp/fn.zip" --timeout 30 --memory-size 256 \
-      --role "arn:$partition:iam::$account:role/$name" --layers "$layer_arn" \
-      --environment "Variables={CX_SECRET=$secret_arn,CX_DOMAIN=$SMOKE_DOMAIN,CX_APPLICATION=smoke,CX_SUBSYSTEM=$subsystem,CX_REPORTING_STRATEGY=LOW_OVERHEAD}" \
-      >/dev/null 2>"$tmp/err"; then
-    fn_created=true; break
-  fi
-  grep -q "cannot be assumed" "$tmp/err" || fail "create-function was refused: $(tail -n1 "$tmp/err")"
-  sleep 10
-done
-$fn_created || fail "Lambda could not assume $name after two minutes."
+aws lambda create-function --function-name "$name" --runtime python3.12 --architectures "$arch" \
+  --handler app.handler --zip-file "fileb://$tmp/fn.zip" --timeout 30 --memory-size 256 \
+  --role "$role_arn" --layers "$layer_arn" \
+  --environment "Variables={CX_SECRET=$secret_arn,CX_DOMAIN=$SMOKE_DOMAIN,CX_APPLICATION=smoke,CX_SUBSYSTEM=$subsystem,CX_REPORTING_STRATEGY=LOW_OVERHEAD}" \
+  >/dev/null 2>"$tmp/err" || fail "Can't create $name: $(tail -n1 "$tmp/err")"
 aws lambda wait function-active-v2 --function-name "$name" || fail "Function $name never became active."
 
 log "marker: $marker"
@@ -139,8 +114,9 @@ done
 
 # Writes the response to $tmp/query and prints the HTTP status (000 when there was no
 # response), so a rejected query is told apart from a marker that hasn't arrived yet.
+# The marker is matched before the limit, so other logs can't crowd it out.
 query_marker() {
-  local dataprime="source logs | filter \$l.subsystemname == '$subsystem' | limit 50"
+  local dataprime="source logs | filter \$l.subsystemname == '$subsystem' | wildfind '$marker' | limit 10"
   if [ -n "${SMOKE_QUERY_CMD:-}" ]; then
     if $SMOKE_QUERY_CMD "$dataprime" >"$tmp/query" 2>/dev/null; then echo 200; else echo 000; fi
   else
@@ -148,7 +124,7 @@ query_marker() {
     start=$(python3 -c "import datetime as d; print(d.datetime.fromtimestamp($start_ms/1000 - 300, d.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
     end=$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc) + d.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
     jq -n --arg q "$dataprime" --arg s "$start" --arg e "$end" \
-      '{query: $q, metadata: {tier: "TIER_FREQUENT_SEARCH", syntax: "QUERY_SYNTAX_DATAPRIME", startDate: $s, endDate: $e, limit: 50}}' \
+      '{query: $q, metadata: {tier: "TIER_FREQUENT_SEARCH", syntax: "QUERY_SYNTAX_DATAPRIME", startDate: $s, endDate: $e, limit: 10}}' \
       | curl -sS --connect-timeout 10 --max-time 20 -o "$tmp/query" -w '%{http_code}' \
           -X POST "https://api.${SMOKE_DOMAIN}/api/v1/dataprime/query" \
           -H 'Content-Type: application/json' -H "Authorization: Bearer $SMOKE_QUERY_KEY" --data @- 2>/dev/null
@@ -156,7 +132,7 @@ query_marker() {
 }
 
 fips=0 errors=0 logs_read=false delivered=false query_error=""
-deadline=$(( $(date +%s) + 900 ))  # delivery took 3-6 minutes in testing
+deadline=$(( $(date +%s) + 900 ))  # delivery took 3-8 minutes in testing
 while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 15
   if out=$(aws logs filter-log-events --log-group-name "/aws/lambda/$name" --start-time "$start_ms" --output json 2>/dev/null); then

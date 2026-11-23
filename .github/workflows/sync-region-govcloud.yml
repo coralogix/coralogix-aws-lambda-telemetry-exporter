@@ -8,51 +8,47 @@ name: Synchronise GovCloud region
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'govcloud-test or govcloud'
-        type: environment
-        required: true
-        default: govcloud-test
       target_region:
         description: 'GovCloud region which will get synced to us-gov-west-1'
         required: true
         default: us-gov-east-1
 
+# Shares publish-govcloud.yml's lock: both publish layer versions, and two runs at once
+# could each publish "the next" version and leave the regions out of sync.
+concurrency:
+  group: publish-govcloud
+  cancel-in-progress: false
+
 jobs:
 
   sync:
     runs-on: ubuntu-22.04
-    environment: ${{ inputs.environment }}
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
     permissions:
       contents: read
       id-token: write
     steps:
     - name: Check the inputs
       env:
-        ENVIRONMENT: ${{ inputs.environment }}
         TARGET_REGION: ${{ inputs.target_region }}
       run: |
-        case "$ENVIRONMENT" in
-          govcloud|govcloud-test) ;;
-          *) echo "::error::Choose govcloud-test or govcloud, not $ENVIRONMENT."; exit 1 ;;
-        esac
         [ "$TARGET_REGION" = us-gov-east-1 ] || { echo "::error::Only us-gov-east-1 can be synced from us-gov-west-1."; exit 1; }
     - uses: actions/checkout@v6
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
     - name: Sync region
       env:
         TARGET_REGION: ${{ inputs.target_region }}
       run: |
         set -euo pipefail
-        source ./scripts/set_${{ inputs.environment }}_vars.sh
         account=$(aws sts get-caller-identity --query Account --output text)
         for arch in x86_64 arm64; do
-          layer="coralogix-aws-lambda-telemetry-exporter-$arch$NAME_SUFFIX"
+          layer="coralogix-aws-lambda-telemetry-exporter-$arch"
           ./scripts/sync_layer.sh "arn:aws-us-gov:lambda:us-gov-west-1:$account:layer:$layer" \
             "arn:aws-us-gov:lambda:$TARGET_REGION:$account:layer:$layer" false false
         done
-        ENVIRONMENT=${{ inputs.environment }} ./scripts/check_exporter_layer.sh
+        ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh

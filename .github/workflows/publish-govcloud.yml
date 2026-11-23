@@ -1,12 +1,12 @@
 name: Publish GovCloud
-run-name: Publish GovCloud ${{ inputs.version }} (${{ inputs.environment }})
 
-# The GovCloud counterpart of publish.yml: the same environment input, branches, signing
-# and layer scripts. It differs where GovCloud requires it:
+# The GovCloud counterpart of publish.yml, with the same signing and layer scripts, run
+# from master only. It differs where GovCloud requires it:
 #   - the FIPS layer is built natively on AL2023 (ci/govcloud/build.sh);
-#   - AWS access is OIDC to a role that trusts only these environments, no stored keys;
-#   - layers are published private and made public only after a smoke test passes.
-# Environments: govcloud-test (-test layers, never public) and govcloud (the release).
+#   - AWS access is OIDC to a role that trusts only the govcloud environment, no stored keys;
+#   - layers are published private and made public only after a smoke test passes, so a
+#     failed run never reaches customers (it leaves an unused private version).
+# There is no test environment: it would let any branch assume a GovCloud role.
 #
 # Separate from publish.yml because nothing else is shared: GovCloud gets only the exporter
 # layers (no SAR, Docker Hub or tag; the version is released in commercial first).
@@ -14,54 +14,58 @@ run-name: Publish GovCloud ${{ inputs.version }} (${{ inputs.environment }})
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to be published'
-        required: true
-      environment:
-        description: 'govcloud-test or govcloud'
-        type: environment
-        required: true
-        default: govcloud-test
 
 concurrency:
-  group: publish-govcloud-${{ inputs.environment }}
+  group: publish-govcloud
   cancel-in-progress: false
 
 jobs:
 
   check-regional-sync:
     runs-on: ubuntu-22.04
-    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'govcloud-test' }}
-    environment: ${{ inputs.environment }}
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
     permissions:
       contents: read
       id-token: write
     steps:
-    # The environment input lists every environment, commercial ones included.
-    - name: Check the environment
+    - name: Check the role
       env:
-        ENVIRONMENT: ${{ inputs.environment }}
+        ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       run: |
-        case "$ENVIRONMENT" in
-          govcloud|govcloud-test) ;;
-          *) echo "::error::Choose govcloud-test or govcloud, not $ENVIRONMENT."; exit 1 ;;
-        esac
+        [[ $ROLE_ARN =~ ^arn:aws-us-gov:iam::[0-9]{12}:role/ ]] || { echo "::error::AWS_ROLE_ARN is not a GovCloud role: '$ROLE_ARN'."; exit 1; }
     - uses: actions/checkout@v6
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
+    # Variables can be inherited from the organization or repository, so a missing GovCloud
+    # value can silently become a commercial one: check what they point at, not just that
+    # they are set.
+    - name: Check the GovCloud settings
+      env:
+        ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        SIGNER_BUCKET: ${{ vars.SIGNER_BUCKET }}
+        SIGNER_PROFILE_NAME: ${{ vars.SIGNER_PROFILE_NAME }}
+      run: |
+        set -euo pipefail
+        account=$(aws sts get-caller-identity --query Account --output text)
+        [ "$account" = "$(cut -d: -f5 <<<"$ROLE_ARN")" ] || { echo "::error::Signed in to $account, not the role's account."; exit 1; }
+        region=$(aws s3api get-bucket-location --bucket "$SIGNER_BUCKET" --query LocationConstraint --output text) \
+          || { echo "::error::Can't find the signing bucket '$SIGNER_BUCKET' in GovCloud."; exit 1; }
+        [ "$region" = us-gov-west-1 ] || { echo "::error::The signing bucket is in $region, not us-gov-west-1."; exit 1; }
+        aws signer get-signing-profile --profile-name "$SIGNER_PROFILE_NAME" --query profileName --output text >/dev/null \
+          || { echo "::error::Can't find the signing profile '$SIGNER_PROFILE_NAME' in us-gov-west-1."; exit 1; }
     - name: Check if layer versions are in sync across regions
-      run: ENVIRONMENT=${{ inputs.environment }} ./scripts/check_exporter_layer.sh
+      run: ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh
 
   package:
     name: package (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     needs: [check-regional-sync]
-    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'govcloud-test' }}
-    environment: ${{ inputs.environment }}
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
     permissions:
       contents: read
       id-token: write
@@ -73,11 +77,11 @@ jobs:
           - arch: arm64
             runner: ubuntu-22.04-arm
     env:
-      SIGNER_BUCKET: ${{ vars.GOVCLOUD_SIGNING_BUCKET_PREFIX }}-us-gov-west-1
-      # The bucket is shared by both environments (and possibly other workflows), so each
-      # run signs under its own prefix: nothing else can replace its ZIP before signing
-      # or its signed ZIP before download.
-      SIGNING_PATH: ${{ inputs.environment }}/${{ github.run_id }}-${{ github.run_attempt }}
+      SIGNER_BUCKET: ${{ vars.SIGNER_BUCKET }}
+      # The bucket may be shared with other workflows, so each run signs under its own
+      # prefix: nothing else can replace its ZIP before signing or its signed ZIP before
+      # download.
+      SIGNING_PATH: govcloud/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
     - uses: actions/checkout@v6
     - uses: docker/setup-buildx-action@v4
@@ -98,7 +102,7 @@ jobs:
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
     - name: Upload package to S3
       run: aws s3 cp "target/package-${{ matrix.arch }}.zip" "s3://$SIGNER_BUCKET/to-be-signed/$SIGNING_PATH/"
@@ -115,7 +119,7 @@ jobs:
         source-s3-version: ${{ env.LATEST_VERSION }}
         destination-s3-bucket: ${{ env.SIGNER_BUCKET }}
         destination-s3-prefix: signed/${{ env.SIGNING_PATH }}/
-        profile-name: ${{ vars.GOVCLOUD_SIGNER_PROFILE }}
+        profile-name: ${{ vars.SIGNER_PROFILE_NAME }}
         max-wait-time: 60
         rename-signed-object: true
     - name: Download the signed package from S3
@@ -130,9 +134,9 @@ jobs:
 
   publish-layers:
     runs-on: ubuntu-22.04
-    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') || inputs.environment == 'govcloud-test' }}
+    if: ${{ github.ref == 'refs/heads/master' }}
     needs: [package]
-    environment: ${{ inputs.environment }}
+    environment: govcloud
     permissions:
       contents: read
       id-token: write
@@ -143,7 +147,7 @@ jobs:
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
     - name: Download packages
       uses: actions/download-artifact@v8
@@ -152,15 +156,15 @@ jobs:
         path: target
         merge-multiple: true
     - name: Publish layers
-      run: ./scripts/publish_${{ inputs.environment }}.sh
+      run: ./scripts/publish_govcloud.sh
     # The new version, the same in every region and for both architectures.
     - name: Check the published version
       id: version
       run: |
         set -euo pipefail
-        ENVIRONMENT=${{ inputs.environment }} ./scripts/check_exporter_layer.sh
-        . ./scripts/set_${{ inputs.environment }}_vars.sh
-        version=$(./scripts/check_layer_version.sh "coralogix-aws-lambda-telemetry-exporter-x86_64${NAME_SUFFIX}" "${REGULAR_REGIONS[@]}")
+        ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh
+        . ./scripts/set_govcloud_vars.sh
+        version=$(./scripts/check_layer_version.sh coralogix-aws-lambda-telemetry-exporter-x86_64 "${REGULAR_REGIONS[@]}")
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # Attaches each new (private) layer version to a temporary function in us-gov-west-1
@@ -169,7 +173,7 @@ jobs:
     name: smoke (${{ matrix.arch }})
     runs-on: ubuntu-22.04
     needs: [publish-layers]
-    environment: ${{ inputs.environment }}
+    environment: govcloud
     timeout-minutes: 30
     permissions:
       contents: read
@@ -183,30 +187,28 @@ jobs:
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
     - name: Smoke test
       env:
-        SMOKE_DOMAIN: ${{ vars.GOVCLOUD_SMOKE_DOMAIN }}
-        SMOKE_BOUNDARY_ARN: ${{ vars.GOVCLOUD_SMOKE_BOUNDARY_ARN }}
-        SMOKE_QUERY_KEY: ${{ secrets.GOV_SMOKE_QUERY_KEY }}
+        SMOKE_DOMAIN: ${{ vars.SMOKE_DOMAIN }}
+        SMOKE_QUERY_KEY: ${{ secrets.SMOKE_QUERY_KEY }}
         # The attempt too, so a re-run never collides with a previous attempt's leftovers.
         SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         VERSION: ${{ needs.publish-layers.outputs.version }}
         ARCH: ${{ matrix.arch }}
       run: |
         set -euo pipefail
-        . ./scripts/set_${{ inputs.environment }}_vars.sh
-        arn=$(aws lambda get-layer-version --layer-name "coralogix-aws-lambda-telemetry-exporter-${ARCH}${NAME_SUFFIX}" \
+        arn=$(aws lambda get-layer-version --layer-name "coralogix-aws-lambda-telemetry-exporter-$ARCH" \
           --version-number "$VERSION" --query LayerVersionArn --output text)
-        ci/govcloud/smoke.sh "$arn" us-gov-west-1 "$ARCH"
+        ci/govcloud/smoke.sh "$arn" "$ARCH"
 
-  # The release: only govcloud, only after both smoke tests pass.
+  # The release: only after both smoke tests pass.
   make-public:
     runs-on: ubuntu-22.04
-    if: ${{ inputs.environment == 'govcloud' && ( github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release') ) }}
+    if: ${{ github.ref == 'refs/heads/master' }}
     needs: [publish-layers, smoke]
-    environment: ${{ inputs.environment }}
+    environment: govcloud
     permissions:
       contents: read
       id-token: write
@@ -215,7 +217,7 @@ jobs:
     - uses: aws-actions/configure-aws-credentials@v6
       with:
         audience: sts.amazonaws.com
-        role-to-assume: ${{ vars.GOVCLOUD_ROLE_ARN }}
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
     - name: Make the layer versions public
       env:
