@@ -1,0 +1,20 @@
+# cargo-deny policy for the GovCloud build (FIPS feature, AWS-LC FIPS v4 module).
+#
+#   cargo deny --config ci/govcloud/deny.toml check advisories bans
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+# Without these, cargo-deny checks the default (non-fips) build.
+no-default-features = true
+features = ["fips"]
+
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "Unmaintained, not a vulnerability. chrono comes through lambda-extension; no replacement until it moves off chrono." },
+]
+
+[bans]
+multiple-versions = "allow"

@@ -34,3 +34,69 @@ jobs:
     #   run: cargo install licensesnip --version 1.6.0 --locked
     # - name: Check license headers
     #   run: licensesnip check
+
+  # Advisories and bans for the GovCloud (fips) build; deny.toml selects the features.
+  govcloud-deny:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v6
+    - uses: EmbarkStudios/cargo-deny-action@v2
+      with:
+        # Replaces the action's default --all-features, which would check both builds.
+        arguments: --config ci/govcloud/deny.toml
+        command: check
+        command-arguments: advisories bans
+
+  # The GovCloud layer (fips feature), built natively on AL2023 for each architecture
+  # (ci/govcloud/README.md).
+  govcloud-build:
+    name: govcloud fips build (${{ matrix.arch }}, AL2023)
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+    - uses: actions/checkout@v6
+    - uses: docker/setup-buildx-action@v3
+    - name: Build the AL2023 builder image
+      uses: docker/build-push-action@v6
+      with:
+        context: ci/govcloud
+        file: ci/govcloud/Dockerfile.builder
+        tags: govcloud-builder:latest
+        load: true
+        cache-from: type=gha,scope=govcloud-${{ matrix.arch }}
+        cache-to: type=gha,mode=max,scope=govcloud-${{ matrix.arch }}
+    # Downloads only; compilation stays cold.
+    - name: Cache cargo downloads
+      uses: actions/cache@v5
+      with:
+        path: .ci-cache
+        key: govcloud-downloads-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: govcloud-downloads-${{ matrix.arch }}-
+    - name: Check, test, build and package
+      run: |
+        mkdir -p .ci-cache/registry .ci-cache/git
+        docker run --rm -v "$PWD":/work -w /work \
+          -v "$PWD/.ci-cache/registry":/usr/local/cargo/registry \
+          -v "$PWD/.ci-cache/git":/usr/local/cargo/git \
+          govcloud-builder:latest ci/govcloud/build.sh
+    # The container runs as root; give the cache and output back to the runner.
+    - name: Fix ownership
+      if: always()
+      run: sudo chown -R "$(id -u):$(id -g)" .ci-cache target || true
+    - uses: actions/upload-artifact@v4
+      with:
+        name: package-${{ matrix.arch }}-fips.zip
+        path: target/package-${{ matrix.arch }}-fips.zip
+        if-no-files-found: error
+        retention-days: 1
