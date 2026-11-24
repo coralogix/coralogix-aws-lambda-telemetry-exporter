@@ -61,6 +61,8 @@ jobs:
     runs-on: ubuntu-22.04
     if: ${{ github.ref == 'refs/heads/master' }}
     environment: production
+    # Uses only the commercial layer keys; no GitHub token permissions needed.
+    permissions: {}
     strategy:
       fail-fast: false
       matrix:
