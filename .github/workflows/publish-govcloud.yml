@@ -195,22 +195,12 @@ jobs:
         audience: sts.amazonaws.com
         role-to-assume: ${{ vars.AWS_ROLE_ARN }}
         aws-region: us-gov-west-1
-    # Regions from set_govcloud_vars.sh. A re-run finds the permission already added, so
-    # only the policy check decides.
+    # In every region; a re-run finds the permission already added.
     - name: Make the layer versions public
       env:
         VERSION: ${{ needs.publish-layers.outputs.version }}
       run: |
         set -euo pipefail
-        . ./scripts/set_govcloud_vars.sh
-        for region in "${REGULAR_REGIONS[@]}"; do
-          for arch in x86_64 arm64; do
-            layer="coralogix-aws-lambda-telemetry-exporter-$arch"
-            aws lambda add-layer-version-permission --region "$region" --layer-name "$layer" \
-              --version-number "$VERSION" --statement-id public --action lambda:GetLayerVersion --principal '*' >/dev/null || true
-            aws lambda get-layer-version-policy --region "$region" --layer-name "$layer" --version-number "$VERSION" \
-              --query Policy --output text | jq -e '.Statement[] | select(.Principal == "*")' >/dev/null \
-              || { echo "::error::$arch v$VERSION is not public in $region."; exit 1; }
-            echo "$region $arch v$VERSION: public"
-          done
+        for arch in x86_64 arm64; do
+          ci/govcloud/ensure-public.sh "coralogix-aws-lambda-telemetry-exporter-$arch" "$VERSION"
         done

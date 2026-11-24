@@ -39,12 +39,13 @@ publish_in_limited_regions () {
 }
 
 COMBINED_LAYER_NAME="coralogix-${RUNTIME}-wrapper-and-exporter-${ARCHITECTURE}${NAME_SUFFIX}"
+# The *_COMBINED_RUNTIMES vars (set_govcloud_vars.sh) narrow the runtimes; commercial keeps these.
 if [ "$RUNTIME" = "nodejs" ] ; then
-    SUPPORTED_RUNTIMES="nodejs22.x nodejs24.x nodejs26.x"
+    SUPPORTED_RUNTIMES="${NODEJS_COMBINED_RUNTIMES:-nodejs22.x nodejs24.x nodejs26.x}"
 elif [ "$RUNTIME" = "python" ] ; then
-    SUPPORTED_RUNTIMES="python3.9 python3.10 python3.11 python3.12 python3.13 python3.14"
+    SUPPORTED_RUNTIMES="${PYTHON_COMBINED_RUNTIMES:-python3.9 python3.10 python3.11 python3.12 python3.13 python3.14}"
 elif [ "$RUNTIME" = "java" ] ; then
-    SUPPORTED_RUNTIMES="java8.al2 java11 java17 java21"
+    SUPPORTED_RUNTIMES="${JAVA_COMBINED_RUNTIMES:-java8.al2 java11 java17 java21}"
 fi
 
 if [ "$ARCHITECTURE" = "x86_64" ] ; then

@@ -31,6 +31,8 @@ jobs:
       run: cargo test --verbose
     - name: Test the GovCloud smoke script
       run: ci/govcloud/test-smoke.sh
+    - name: Test the GovCloud combined-layer scripts
+      run: ci/govcloud/test-combined.sh
     # disabled due to false-positive failures
     # - name: Install licensesnip
     #   run: cargo install licensesnip --version 1.6.0 --locked

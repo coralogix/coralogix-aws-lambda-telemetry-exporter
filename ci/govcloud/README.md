@@ -54,7 +54,8 @@ The publishing role trusts only
 - `signer:StartSigningJob` and `DescribeSigningJob`.
 - `lambda:ListLayerVersions`, `GetLayerVersion`, `PublishLayerVersion`,
   `GetLayerVersionPolicy` and `AddLayerVersionPermission` on
-  `coralogix-aws-lambda-telemetry-exporter-x86_64` and `-arm64`, in both regions.
+  `coralogix-aws-lambda-telemetry-exporter-x86_64` and `-arm64`, and the combined layers
+  `coralogix-<python|nodejs|java>-wrapper-and-exporter-<x86_64|arm64>`, in both regions.
 - For the smoke test: `lambda:CreateFunction`, `GetFunction`, `InvokeFunction` and
   `DeleteFunction` on `function:smoke-exporter-*`; `logs:FilterLogEvents` and
   `DeleteLogGroup` on `/aws/lambda/smoke-exporter-*`; `secretsmanager:DescribeSecret` on
@@ -64,6 +65,34 @@ The publishing role trusts only
 `lambda.amazonaws.com`, allowed only `logs:CreateLogGroup`, `CreateLogStream` and
 `PutLogEvents` on `/aws/lambda/smoke-exporter-*` and `secretsmanager:GetSecretValue` on
 the smoke key secret. CI never creates or changes roles.
+
+## Combined layers
+
+`.github/workflows/publish-combined-govcloud.yml` is the GovCloud counterpart of
+`publish-combined.yml`: it publishes `coralogix-<runtime>-wrapper-and-exporter-<arch>` for the
+runtimes you pick, from `master` only, public on publish and without a smoke test, like
+commercial. Each layer merges:
+
+- the newest exporter version that is public for both architectures in both regions
+  (`public-exporter-version.sh`), so it has passed the smoke test above. A newer private
+  version from a failed run is never used;
+- the latest commercial `coralogix-opentelemetry-<runtime>-wrapper` layer, unchanged. A
+  GovCloud role can't read commercial layers, so the wrapper is fetched in the `production`
+  environment.
+
+The wrappers export only to the exporter on the same host (`http://localhost:4318`); only
+the FIPS exporter connects to Coralogix. Keep the `OTEL_EXPORTER_OTLP_*` endpoints at their
+defaults in GovCloud. The layers support AL2023 runtimes only (the `*_COMBINED_RUNTIMES` in
+`scripts/set_govcloud_vars.sh`).
+
+If a publish fails part-way, don't re-run it: run `sync-region-govcloud.yml`, which copies
+missing combined versions public and makes the newest version public in both regions
+(`ensure-public.sh`), including one whose grant failed. Then publish again. If only one
+architecture of a runtime was published in us-gov-west-1 (its x86_64 and arm64 versions
+differ), first publish the missing one there from the failed run's signed
+`coralogix-<runtime>-wrapper-and-exporter-<arch>.zip` artifact (kept for a day) with
+`aws lambda publish-layer-version`, using the runtimes in `scripts/set_govcloud_vars.sh`,
+make it public with `ensure-public.sh`, then sync.
 
 ## Smoke test
 
