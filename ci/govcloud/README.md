@@ -109,8 +109,19 @@ Both also get `latest-fips`. Run it after `publish-govcloud.yml` and
 `publish-combined-govcloud.yml`, with the exporter version from the GovCloud layer. The
 DockerHub credentials stay in the `production` environment.
 
-Customers build `FROM` the image and push their function image to their own GovCloud ECR.
-Build it with `--provenance=false`: Lambda rejects images with build attestations.
+The images hold only `/opt` (no runtime), so customers copy it into an AL2023 Lambda base
+image (the GovCloud exporter is built on AL2023) and push the result to their own
+GovCloud ECR:
+
+```dockerfile
+FROM coralogixrepo/coralogix-aws-lambda-telemetry-exporter:1.3.0-fips AS coralogix
+FROM public.ecr.aws/lambda/python:3.12
+COPY --from=coralogix /opt/ /opt/
+COPY app.py ${LAMBDA_TASK_ROOT}
+CMD ["app.handler"]
+```
+
+Build with `--provenance=false`: Lambda rejects images with build attestations.
 
 ## Smoke test
 
