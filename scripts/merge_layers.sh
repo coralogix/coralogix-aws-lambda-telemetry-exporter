@@ -4,7 +4,8 @@ set -euo pipefail
 
 # Expects these env vars:
 # ARCHITECTURE   "x86_64" / "arm64"
-# RUNTIME "nodejs" / "python"
+# RUNTIME "nodejs" / "python" / "java"
+# EXPORTER_ZIP, WRAPPER_ZIP (optional, see below)
 # Plus the vars set by set_*_vars.sh
 
 download_layer () {
@@ -40,8 +41,10 @@ EXPORTER_LAYER_NAME="coralogix-aws-lambda-telemetry-exporter-${ARCHITECTURE}${NA
 WRAPPER_LAYER_NAME="coralogix-opentelemetry-${RUNTIME}-wrapper${NAME_SUFFIX}"
 COMBINED_LAYER_NAME="coralogix-${RUNTIME}-wrapper-and-exporter-${ARCHITECTURE}${NAME_SUFFIX}"
 
-download_layer "$EXPORTER_LAYER_NAME"
-download_layer "$WRAPPER_LAYER_NAME"
+# EXPORTER_ZIP / WRAPPER_ZIP (absolute paths) use those files instead of downloading the
+# newest version, e.g. so GovCloud merges an exporter version it has already approved.
+if [ -n "${EXPORTER_ZIP:-}" ]; then cp "$EXPORTER_ZIP" "$EXPORTER_LAYER_NAME.zip"; else download_layer "$EXPORTER_LAYER_NAME"; fi
+if [ -n "${WRAPPER_ZIP:-}" ]; then cp "$WRAPPER_ZIP" "$WRAPPER_LAYER_NAME.zip"; else download_layer "$WRAPPER_LAYER_NAME"; fi
 merge_zips "$EXPORTER_LAYER_NAME.zip" "$WRAPPER_LAYER_NAME.zip" "$COMBINED_LAYER_NAME"
 
 popd > /dev/null

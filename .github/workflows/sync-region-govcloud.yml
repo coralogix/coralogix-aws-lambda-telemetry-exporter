@@ -1,9 +1,10 @@
 name: Synchronise GovCloud region
 
-# The GovCloud counterpart of sync-region.yml, for the exporter layers (the only ones in
-# GovCloud). Copies the versions a region is missing from us-gov-west-1, e.g. after a
-# publish failed part-way and check-regional-sync blocks the next run. Copied versions
-# stay private; publish-govcloud.yml makes a release public.
+# The GovCloud counterpart of sync-region.yml. Copies the versions a region is missing from
+# us-gov-west-1, e.g. after a publish failed part-way and check-regional-sync blocks the next
+# run. Exporter versions stay private (publish-govcloud.yml makes a release public after its
+# smoke test); combined layers are public on publish, so their newest version is made public
+# in both regions, including one whose grant failed.
 
 on:
   workflow_dispatch:
@@ -52,3 +53,21 @@ jobs:
             "arn:aws-us-gov:lambda:$TARGET_REGION:$account:layer:$layer" false false
         done
         ENVIRONMENT=govcloud ./scripts/check_exporter_layer.sh
+    - name: Sync combined layers
+      env:
+        TARGET_REGION: ${{ inputs.target_region }}
+      run: |
+        set -euo pipefail
+        account=$(aws sts get-caller-identity --query Account --output text)
+        for runtime in python nodejs java; do
+          for arch in x86_64 arm64; do
+            layer="coralogix-$runtime-wrapper-and-exporter-$arch"
+            # Nothing to recover for a layer never published (sync_layer.sh can't take an empty source).
+            [ "$(./scripts/check_layer_version.sh "$layer" us-gov-west-1)" != 0 ] || continue
+            ./scripts/sync_layer.sh "arn:aws-us-gov:lambda:us-gov-west-1:$account:layer:$layer" \
+              "arn:aws-us-gov:lambda:$TARGET_REGION:$account:layer:$layer" true false
+            version=$(./scripts/check_layer_version.sh "$layer" us-gov-west-1 "$TARGET_REGION")
+            [ "$version" = 0 ] || ci/govcloud/ensure-public.sh "$layer" "$version"
+          done
+          ENVIRONMENT=govcloud RUNTIME=$runtime ./scripts/check_combined_layer.sh
+        done

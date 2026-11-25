@@ -1,0 +1,240 @@
+name: Publish GovCloud Combined Layers
+
+# The GovCloud counterpart of publish-combined.yml: merges the published OpenTelemetry wrapper
+# layers with the GovCloud FIPS exporter, signs the result and publishes it public, like
+# commercial (no smoke test). It differs where GovCloud requires it:
+#   - the exporter is the newest version already public in GovCloud, so it has passed
+#     publish-govcloud.yml's smoke test; a newer private version from a failed run is skipped;
+#   - the wrappers are the latest commercial ones, fetched with the commercial credentials of
+#     the production environment, since a GovCloud role can't read commercial layers;
+#   - AL2023 runtimes only, and OIDC instead of stored keys for GovCloud.
+# The wrappers export only to the exporter on localhost; only the FIPS exporter connects to
+# Coralogix. Recover from a partial publish with sync-region-govcloud.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      python:
+        description: 'Publish Python?'
+        required: true
+        type: boolean
+      nodejs:
+        description: 'Publish Node.js?'
+        required: true
+        type: boolean
+      java:
+        description: 'Publish Java?'
+        required: true
+        type: boolean
+
+concurrency:
+  group: publish-govcloud
+  cancel-in-progress: false
+
+jobs:
+
+  exporter:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Pick the newest public exporter version
+      id: version
+      run: |
+        set -euo pipefail
+        version=$(ci/govcloud/public-exporter-version.sh)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "- exporter version $version" >> "$GITHUB_STEP_SUMMARY"
+
+  wrappers:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: production
+    # Uses only the commercial layer keys; no GitHub token permissions needed.
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ["python", "nodejs", "java"]
+        exclude:
+          - runtime: ${{ !inputs.python && 'python' }}
+          - runtime: ${{ !inputs.nodejs && 'nodejs' }}
+          - runtime: ${{ !inputs.java && 'java' }}
+    steps:
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ vars.LAYER_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.LAYER_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.LAYER_AWS_DEFAULT_REGION }}
+    # The newest version, as merge_layers.sh picks it for commercial.
+    - name: Download the wrapper layer
+      env:
+        RUNTIME: ${{ matrix.runtime }}
+      run: |
+        set -euo pipefail
+        name="coralogix-opentelemetry-${RUNTIME}-wrapper"
+        # Default (JSON) output: with --output text the query runs per page, which breaks past 50 versions.
+        version=$(aws lambda list-layer-versions --layer-name "$name" --query 'LayerVersions[0].Version')
+        url=$(aws lambda get-layer-version --layer-name "$name" --version-number "$version" --query Content.Location --output text)
+        mkdir -p target
+        curl -sSf "$url" -o "target/$name.zip"
+        echo "- $name version $version" >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: wrapper-${{ matrix.runtime }}
+        path: target/coralogix-opentelemetry-${{ matrix.runtime }}-wrapper.zip
+        if-no-files-found: error
+        retention-days: 1
+
+  package:
+    name: package (${{ matrix.runtime }}, ${{ matrix.architecture }})
+    runs-on: ubuntu-22.04
+    needs: [exporter, wrappers]
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ["python", "nodejs", "java"]
+        architecture: ["x86_64", "arm64"]
+        exclude:
+          - runtime: ${{ !inputs.python && 'python' }}
+          - runtime: ${{ !inputs.nodejs && 'nodejs' }}
+          - runtime: ${{ !inputs.java && 'java' }}
+    env:
+      RUNTIME: ${{ matrix.runtime }}
+      ARCHITECTURE: ${{ matrix.architecture }}
+      SIGNER_BUCKET: ${{ vars.SIGNER_BUCKET }}
+      # The bucket may be shared with other workflows, so each run signs under its own prefix.
+      SIGNING_PATH: govcloud/combined/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        name: wrapper-${{ matrix.runtime }}
+        path: ${{ runner.temp }}/wrapper
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Merge layers
+      env:
+        EXPORTER_VERSION: ${{ needs.exporter.outputs.version }}
+      run: |
+        set -euo pipefail
+        url=$(aws lambda get-layer-version --layer-name "coralogix-aws-lambda-telemetry-exporter-${ARCHITECTURE}" \
+          --version-number "$EXPORTER_VERSION" --query Content.Location --output text)
+        curl -sSf "$url" -o "$RUNNER_TEMP/exporter.zip"
+        source ./scripts/set_govcloud_vars.sh
+        EXPORTER_ZIP="$RUNNER_TEMP/exporter.zip"
+        WRAPPER_ZIP="$RUNNER_TEMP/wrapper/coralogix-opentelemetry-${RUNTIME}-wrapper.zip"
+        source ./scripts/merge_layers.sh
+        echo "COMBINED_LAYER_NAME=$COMBINED_LAYER_NAME" >> "$GITHUB_ENV"
+    - name: Upload package to S3
+      run: aws s3 cp "target/${COMBINED_LAYER_NAME}.zip" "s3://$SIGNER_BUCKET/to-be-signed/$SIGNING_PATH/"
+    - name: Get S3 version of the uploaded file
+      run: |
+        LATEST_VERSION=$(aws s3api list-object-versions --bucket "$SIGNER_BUCKET" --prefix "to-be-signed/$SIGNING_PATH/${COMBINED_LAYER_NAME}.zip" --query 'Versions[?IsLatest].[VersionId]' --output text)
+        echo "LATEST_VERSION=$LATEST_VERSION" >> "$GITHUB_ENV"
+    - name: Sign the package
+      uses: clowdhaus/aws-lambda-code-signing-action@v2.0.0
+      with:
+        aws-region: us-gov-west-1
+        source-s3-bucket: ${{ env.SIGNER_BUCKET }}
+        source-s3-key: to-be-signed/${{ env.SIGNING_PATH }}/${{ env.COMBINED_LAYER_NAME }}.zip
+        source-s3-version: ${{ env.LATEST_VERSION }}
+        destination-s3-bucket: ${{ env.SIGNER_BUCKET }}
+        destination-s3-prefix: signed/${{ env.SIGNING_PATH }}/
+        profile-name: ${{ vars.SIGNER_PROFILE_NAME }}
+        max-wait-time: 60
+        rename-signed-object: true
+    - name: Download the signed package from S3
+      run: aws s3 cp "s3://$SIGNER_BUCKET/signed/$SIGNING_PATH/${COMBINED_LAYER_NAME}.zip" "target/${COMBINED_LAYER_NAME}.zip"
+    - name: Upload package
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.COMBINED_LAYER_NAME }}.zip
+        path: target/${{ env.COMBINED_LAYER_NAME }}.zip
+        if-no-files-found: error
+        retention-days: 1
+
+  check-regional-sync:
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ["python", "nodejs", "java"]
+        exclude:
+          - runtime: ${{ !inputs.python && 'python' }}
+          - runtime: ${{ !inputs.nodejs && 'nodejs' }}
+          - runtime: ${{ !inputs.java && 'java' }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Check if layer versions are in sync across regions
+      run: ENVIRONMENT=govcloud RUNTIME=${{ matrix.runtime }} ./scripts/check_combined_layer.sh
+
+  publish-layers:
+    name: publish-layers (${{ matrix.runtime }}, ${{ matrix.architecture }})
+    runs-on: ubuntu-22.04
+    needs: [package, check-regional-sync]
+    if: ${{ github.ref == 'refs/heads/master' }}
+    environment: govcloud
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ["python", "nodejs", "java"]
+        architecture: ["x86_64", "arm64"]
+        exclude:
+          - runtime: ${{ !inputs.python && 'python' }}
+          - runtime: ${{ !inputs.nodejs && 'nodejs' }}
+          - runtime: ${{ !inputs.java && 'java' }}
+    env:
+      RUNTIME: ${{ matrix.runtime }}
+      ARCHITECTURE: ${{ matrix.architecture }}
+      COMBINED_LAYER_NAME: coralogix-${{ matrix.runtime }}-wrapper-and-exporter-${{ matrix.architecture }}
+    steps:
+    - uses: actions/checkout@v6
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        audience: sts.amazonaws.com
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: us-gov-west-1
+    - name: Download package
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ env.COMBINED_LAYER_NAME }}.zip
+        path: target
+    - name: Publish layers
+      run: |
+        source ./scripts/set_govcloud_vars.sh
+        # Public on publish, like commercial.
+        PUBLIC=true
+        source ./scripts/publish_combined_layer.sh
