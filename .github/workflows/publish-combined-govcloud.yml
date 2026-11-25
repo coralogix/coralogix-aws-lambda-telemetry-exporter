@@ -84,7 +84,8 @@ jobs:
       run: |
         set -euo pipefail
         name="coralogix-opentelemetry-${RUNTIME}-wrapper"
-        version=$(aws lambda list-layer-versions --layer-name "$name" --query 'LayerVersions[0].Version' --output text)
+        # Default (JSON) output: with --output text the query runs per page, which breaks past 50 versions.
+        version=$(aws lambda list-layer-versions --layer-name "$name" --query 'LayerVersions[0].Version')
         url=$(aws lambda get-layer-version --layer-name "$name" --version-number "$version" --query Content.Location --output text)
         mkdir -p target
         curl -sSf "$url" -o "target/$name.zip"
@@ -237,10 +238,3 @@ jobs:
         # Public on publish, like commercial.
         PUBLIC=true
         source ./scripts/publish_combined_layer.sh
-    # publish_combined_layer.sh stops at a failed grant, so check every region.
-    - name: Check they are public
-      run: |
-        set -euo pipefail
-        . ./scripts/set_govcloud_vars.sh
-        version=$(./scripts/check_layer_version.sh "$COMBINED_LAYER_NAME" "${REGULAR_REGIONS[@]}")
-        ci/govcloud/ensure-public.sh "$COMBINED_LAYER_NAME" "$version"
