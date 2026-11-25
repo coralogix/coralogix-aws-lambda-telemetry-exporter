@@ -94,6 +94,24 @@ differ), first publish the missing one there from the failed run's signed
 `aws lambda publish-layer-version`, using the runtimes in `scripts/set_govcloud_vars.sh`,
 make it public with `ensure-public.sh`, then sync.
 
+## Container images
+
+`.github/workflows/publish-govcloud-images.yml` builds images for Lambdas deployed as
+container images, which can't use layers. It uses the same `docker/Dockerfile` as
+commercial (the layer contents in `/opt`), built from the newest layers already public in
+GovCloud, so each image holds exactly the signed layer bytes. It pushes to the commercial
+DockerHub repositories with a `-fips` tag, like the FIPS Coralogix Operator:
+
+- `coralogixrepo/coralogix-aws-lambda-telemetry-exporter:<version>-fips`
+- `coralogixrepo/coralogix-<runtime>-wrapper-and-exporter:gov-<layer version>-fips`
+
+Both also get `latest-fips`. Run it after `publish-govcloud.yml` and
+`publish-combined-govcloud.yml`, with the exporter version from the GovCloud layer. The
+DockerHub credentials stay in the `production` environment.
+
+Customers build `FROM` the image and push their function image to their own GovCloud ECR.
+Build it with `--provenance=false`: Lambda rejects images with build attestations.
+
 ## Smoke test
 
 `smoke.sh` attaches a private layer version to a temporary `python3.12` function, invokes
