@@ -96,18 +96,13 @@ make it public with `ensure-public.sh`, then sync.
 
 ## Container images
 
-`.github/workflows/publish-govcloud-images.yml` builds images for Lambdas deployed as
-container images, which can't use layers. It uses the same `docker/Dockerfile` as
-commercial (the layer contents in `/opt`), built from the newest layers already public in
-GovCloud, so each image holds exactly the signed layer bytes. It pushes to the commercial
-DockerHub repositories with a `-fips` tag, like the FIPS Coralogix Operator:
+For Lambdas deployed as container images, which can't use layers, both publish workflows
+push images like commercial's `publish-to-dockerhub` jobs (the same `docker/Dockerfile`,
+the layer contents in `/opt`), with a `-fips` tag suffix like the FIPS Coralogix Operator:
 
-- `coralogixrepo/coralogix-aws-lambda-telemetry-exporter:<version>-fips`
-- `coralogixrepo/coralogix-<runtime>-wrapper-and-exporter:gov-<layer version>-fips`
-
-Both also get `latest-fips`. Run it after `publish-govcloud.yml` and
-`publish-combined-govcloud.yml`, with the exporter version from the GovCloud layer. The
-DockerHub credentials stay in the `production` environment.
+- `coralogixrepo/coralogix-aws-lambda-telemetry-exporter:<version>-fips`, after the smoke
+  test passes
+- `coralogixrepo/coralogix-<runtime>-wrapper-and-exporter:<GovCloud layer version>-fips`
 
 The images hold only `/opt` (no runtime), so customers copy it into an AL2023 Lambda base
 image (the GovCloud exporter is built on AL2023) and push the result to their own
