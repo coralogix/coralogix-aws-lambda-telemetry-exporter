@@ -307,7 +307,7 @@ jobs:
       with:
         images: coralogixrepo/${{ env.IMAGE_NAME }}
         tags: |
-          type=raw,value=${{ env.NEW_LAYER_VERSION }}
+          type=raw,value=gov-${{ env.NEW_LAYER_VERSION }}
           type=sha
         flavor: |
           suffix=-fips

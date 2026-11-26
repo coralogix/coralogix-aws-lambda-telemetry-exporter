@@ -102,7 +102,8 @@ the layer contents in `/opt`), with a `-fips` tag suffix like the FIPS Coralogix
 
 - `coralogixrepo/coralogix-aws-lambda-telemetry-exporter:<version>-fips`, after the smoke
   test passes
-- `coralogixrepo/coralogix-<runtime>-wrapper-and-exporter:<GovCloud layer version>-fips`
+- `coralogixrepo/coralogix-<runtime>-wrapper-and-exporter:gov-<GovCloud layer version>-fips`: `gov-`
+  because GovCloud layer versions are numbered separately from commercial ones
 
 The images hold only `/opt` (no runtime), so customers copy it into an AL2023 Lambda base
 image (the GovCloud exporter is built on AL2023) and push the result to their own
