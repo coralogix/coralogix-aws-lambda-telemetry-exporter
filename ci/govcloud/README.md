@@ -94,6 +94,30 @@ differ), first publish the missing one there from the failed run's signed
 `aws lambda publish-layer-version`, using the runtimes in `scripts/set_govcloud_vars.sh`,
 make it public with `ensure-public.sh`, then sync.
 
+## Container images
+
+For Lambdas deployed as container images, which can't use layers, both publish workflows
+push images like commercial's `publish-to-dockerhub` jobs (the same `docker/Dockerfile`,
+the layer contents in `/opt`), with a `-fips` tag suffix like the FIPS Coralogix Operator:
+
+- `coralogixrepo/coralogix-aws-lambda-telemetry-exporter:<version>-fips`, after the smoke
+  test passes
+- `coralogixrepo/coralogix-<runtime>-wrapper-and-exporter:<GovCloud layer version>-fips`
+
+The images hold only `/opt` (no runtime), so customers copy it into an AL2023 Lambda base
+image (the GovCloud exporter is built on AL2023) and push the result to their own
+GovCloud ECR:
+
+```dockerfile
+FROM coralogixrepo/coralogix-aws-lambda-telemetry-exporter:1.3.0-fips AS coralogix
+FROM public.ecr.aws/lambda/python:3.12
+COPY --from=coralogix /opt/ /opt/
+COPY app.py ${LAMBDA_TASK_ROOT}
+CMD ["app.handler"]
+```
+
+Build with `--provenance=false`: Lambda rejects images with build attestations.
+
 ## Smoke test
 
 `smoke.sh` attaches a private layer version to a temporary `python3.12` function, invokes
